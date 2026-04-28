@@ -84,12 +84,25 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const body = await readBody(req);
-  const { messages = [], systemPrompt } = body || {};
+  const { messages = [], systemPrompt, stream: wantStream = false } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages vacío o inválido' });
   }
-  if (messages[messages.length - 1].role !== 'user' && messages[messages.length - 1].role !== undefined) {
-    // permitir sin role explícito
+
+  /* ============================================================
+     Modo STREAMING (sólo NVIDIA por ahora) — proxy SSE al cliente
+     Si falla, automáticamente caemos a modo no-streaming.
+     ============================================================ */
+  if (wantStream) {
+    const nvidia = PROVIDERS.find(p => p.name === 'nvidia');
+    const nvKey = nvidia && process.env[nvidia.keyEnv];
+    if (nvidia && nvKey) {
+      const ok = await streamProxyOpenAI(nvidia, nvKey, messages, systemPrompt, res);
+      if (ok) return; // ya enviamos toda la respuesta como SSE
+      // si streamProxy ya escribió headers, no podemos volver atrás
+      // (controlado dentro: solo retorna false si NO se enviaron headers)
+    }
+    // si no había NVIDIA o no hubo respuesta válida, seguimos en modo no-stream
   }
 
   const fallbackChain = [];
@@ -121,6 +134,120 @@ export default async function handler(req, res) {
     error: 'Todos los proveedores fallaron o no tienen key configurada',
     fallbackChain,
   });
+}
+
+/* ============================================================
+   STREAMING — proxy SSE OpenAI-compatible al cliente
+   ─ Devuelve true si ya escribió la respuesta completa al cliente.
+   ─ Devuelve false si NO escribió headers (todavía podemos hacer fallback).
+   ============================================================ */
+async function streamProxyOpenAI(p, key, messages, systemPrompt, res) {
+  const oaiMessages = [];
+  if (systemPrompt) oaiMessages.push({ role: 'system', content: systemPrompt });
+  for (const m of messages) {
+    if (!m || typeof m.text !== 'string' || !m.text.trim()) continue;
+    const role = (m.role === 'jarvis' || m.role === 'model' || m.role === 'assistant') ? 'assistant' : 'user';
+    oaiMessages.push({ role, content: m.text });
+  }
+  if (!oaiMessages.filter(x => x.role !== 'system').length) return false;
+
+  const gen = { ...COMMON_GEN, ...(p.gen || {}) };
+  const body = {
+    model: p.model,
+    messages: oaiMessages,
+    temperature: gen.temperature,
+    top_p: gen.top_p,
+    max_tokens: gen.max_tokens,
+    stream: true,
+    ...(p.extraBody || {}),
+  };
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 90000);
+  let upstream;
+  try {
+    upstream = await fetch(p.endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${key}`,
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...(p.extraHeaders || {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(t);
+    return false; // no escribimos headers, podemos fallbackear
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    clearTimeout(t);
+    return false;
+  }
+
+  // Headers SSE para el cliente
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  // Evento inicial con metadata de provider
+  res.write(`event: meta\ndata: ${JSON.stringify({ provider: p.name, model: p.model })}\n\n`);
+
+  // Reenvío del stream upstream → cliente, parseando los chunks SSE
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let aggregateContent = '';
+  let aggregateReasoning = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Procesamos por líneas (SSE)
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line || !line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') {
+          res.write(`event: done\ndata: ${JSON.stringify({ content: aggregateContent.trim(), reasoning: aggregateReasoning.length })}\n\n`);
+          res.end();
+          clearTimeout(t);
+          return true;
+        }
+        try {
+          const j = JSON.parse(payload);
+          const delta = j?.choices?.[0]?.delta || {};
+          const reasoning = delta.reasoning_content;
+          const content = delta.content;
+          if (reasoning) {
+            aggregateReasoning += reasoning;
+            res.write(`event: reasoning\ndata: ${JSON.stringify({ d: reasoning })}\n\n`);
+          }
+          if (content) {
+            aggregateContent += content;
+            res.write(`event: token\ndata: ${JSON.stringify({ d: content })}\n\n`);
+          }
+        } catch { /* ignore parse error */ }
+      }
+    }
+  } catch (e) {
+    res.write(`event: error\ndata: ${JSON.stringify({ message: String(e?.message || e) })}\n\n`);
+  } finally {
+    clearTimeout(t);
+  }
+  if (!res.writableEnded) {
+    res.write(`event: done\ndata: ${JSON.stringify({ content: aggregateContent.trim(), reasoning: aggregateReasoning.length })}\n\n`);
+    res.end();
+  }
+  return true;
 }
 
 /* ============================================================

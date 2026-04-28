@@ -1265,7 +1265,7 @@ function addUserMessage(text) {
   renderCmdHistory();
 }
 
-function addJarvisMessage(fullText) {
+function addJarvisMessage(fullText, reasoning) {
   const time = nowTime();
   STATE.chatHistory.push({ role: 'jarvis', text: fullText, time });
   const el = document.createElement('div');
@@ -1273,6 +1273,16 @@ function addJarvisMessage(fullText) {
   el.innerHTML = `<span class="msg-pre">J.A.R.V.I.S.</span><span class="msg-text tw-cursor"></span><span class="msg-time">${time}</span>`;
   $('#chat-history').appendChild(el);
   const txtEl = el.querySelector('.msg-text');
+
+  // Bloque colapsable de razonamiento (si vino del stream)
+  if (reasoning && reasoning.trim()) {
+    const det = document.createElement('details');
+    det.className = 'reasoning-collapsible';
+    det.dataset.testid = 'reasoning-collapsible';
+    det.innerHTML = `<summary>✦ Ver razonamiento (${reasoning.length} chars)</summary><div class="reasoning-body"></div>`;
+    det.querySelector('.reasoning-body').textContent = reasoning;
+    el.appendChild(det);
+  }
 
   Sphere.setMode('speaking');
   // TTS: hablar la respuesta completa en paralelo al typewriter
@@ -1846,11 +1856,25 @@ function addPeerMessage(name, text) {
   beep(880, 0.05, 'sine', 0.04);
 }
 
+/* ---------- Settings: streaming/reasoning ---------- */
+const STREAM_SETTINGS = {
+  get showReasoning() {
+    try {
+      const s = window.TabsBridge?.Session.load() || {};
+      return !!s.showReasoning;
+    } catch { return false; }
+  },
+  set showReasoning(v) {
+    try { window.TabsBridge?.Session.patch({ showReasoning: !!v }); } catch {}
+  },
+};
+
 async function jarvisReply(userText, _followUpDepth = 0) {
   Sphere.setMode('processing');
 
+  const useStream = !!STREAM_SETTINGS.showReasoning;
   // Indicadores: mensaje "pensando..." en el chat + log "pensando..."
-  const thinkingMsg = addThinkingMessage();
+  const thinkingMsg = addThinkingMessage(useStream);
   const thinkingLog = pushLog({ lv: 'think', m: 'Pensando', thinkingActive: true, id: 'think-' + Date.now() });
 
   // Preparar historial (últimos 12 turnos para mantener contexto)
@@ -1874,6 +1898,7 @@ async function jarvisReply(userText, _followUpDepth = 0) {
       body: JSON.stringify({
         messages: history,
         systemPrompt: SYSTEM_PROMPT + '\n' + ctx,
+        stream: useStream,
       }),
     });
 
@@ -1887,23 +1912,17 @@ async function jarvisReply(userText, _followUpDepth = 0) {
       return;
     }
 
-    const data = await r.json();
-    const elapsedMs = Math.round(performance.now() - t0);
-    removeThinkingMessage(thinkingMsg);
-    finishThinkingLog(thinkingLog, 'ok', elapsedMs);
+    // Detección de modo: si el server envió SSE → streaming
+    const ct = r.headers.get('content-type') || '';
+    let processed;
+    if (ct.includes('text/event-stream')) {
+      processed = await consumeReasoningStream(r, thinkingMsg, thinkingLog, t0);
+    } else {
+      processed = await consumeJsonResponse(r, thinkingMsg, thinkingLog, t0);
+    }
 
-    const rawReply = (data.reply || '').trim();
-    if (!rawReply) {
-      addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
-      return;
-    }
-    pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms (${data.model || ''})`);
-    if (data.fallbackChain && data.fallbackChain.length > 1) {
-      // Si hubo fallback, registrar qué falló
-      for (const step of data.fallbackChain) {
-        if (step.status === 'error') pushLog('warn', `⚠ ${step.provider} falló — escalando…`);
-      }
-    }
+    if (!processed || !processed.reply) return;
+    const { reply: rawReply, provider, model, reasoning } = processed;
 
     // Detectar y ejecutar [ABRIR:url] o [APP:scheme] o [TABS:...] o [PEERS:msg:...]
     let cleaned = rawReply;
@@ -1918,7 +1937,7 @@ async function jarvisReply(userText, _followUpDepth = 0) {
     const tabsRes = await extractAndExecuteTabs(cleaned);
     cleaned = tabsRes.clean;
 
-    addJarvisMessage(cleaned || rawReply);
+    addJarvisMessage(cleaned || rawReply, reasoning);
 
     if (tabsRes.feedback && _followUpDepth < 1) {
       setTimeout(() => {
@@ -1934,13 +1953,144 @@ async function jarvisReply(userText, _followUpDepth = 0) {
   }
 }
 
+/* Consume respuesta JSON (modo no-streaming) */
+async function consumeJsonResponse(r, thinkingMsg, thinkingLog, t0) {
+  const data = await r.json();
+  const elapsedMs = Math.round(performance.now() - t0);
+  removeThinkingMessage(thinkingMsg);
+  finishThinkingLog(thinkingLog, 'ok', elapsedMs);
+
+  const rawReply = (data.reply || '').trim();
+  if (!rawReply) {
+    addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
+    return null;
+  }
+  pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms (${data.model || ''})`);
+  if (data.fallbackChain && data.fallbackChain.length > 1) {
+    for (const step of data.fallbackChain) {
+      if (step.status === 'error') pushLog('warn', `⚠ ${step.provider} falló — escalando…`);
+    }
+  }
+  return { reply: rawReply, provider: data.provider, model: data.model };
+}
+
+/* Consume stream SSE (modo razonamiento en vivo) */
+async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let aggregateContent = '';
+  let aggregateReasoning = '';
+  let provider = '?';
+  let model = '';
+  const reasoningBox = thinkingMsg ? ensureReasoningBox(thinkingMsg) : null;
+  const thinkLogM = thinkingLog ? thinkingLog.querySelector('.m') : null;
+
+  const flushReasoning = throttle((text) => {
+    if (reasoningBox) {
+      reasoningBox.textContent = text;
+      reasoningBox.scrollTop = reasoningBox.scrollHeight;
+    }
+    if (thinkLogM) {
+      // tomamos solo las últimas ~80 chars para el log
+      thinkLogM.textContent = 'Pensando: ' + text.slice(-80).replace(/\s+/g, ' ');
+    }
+  }, 80);
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Parsear SSE: eventos separados por \n\n, líneas dentro como event: y data:
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        let evtName = 'message';
+        const dataLines = [];
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) evtName = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        const dataStr = dataLines.join('\n');
+        let payload = {};
+        try { payload = dataStr ? JSON.parse(dataStr) : {}; } catch {}
+
+        if (evtName === 'meta') {
+          provider = payload.provider || provider;
+          model = payload.model || model;
+          if (thinkLogM) thinkLogM.textContent = `Pensando con ${provider}…`;
+        } else if (evtName === 'reasoning') {
+          aggregateReasoning += payload.d || '';
+          flushReasoning(aggregateReasoning);
+        } else if (evtName === 'token') {
+          aggregateContent += payload.d || '';
+        } else if (evtName === 'done') {
+          break;
+        } else if (evtName === 'error') {
+          pushLog('warn', '⚠ stream: ' + (payload.message || ''));
+        }
+      }
+    }
+  } catch (e) {
+    pushLog('warn', '⚠ Stream cortado: ' + (e.message || e));
+  }
+
+  const elapsedMs = Math.round(performance.now() - t0);
+  // Marcar caja de razonamiento como "done" (oculta el caret) y desuscribir log
+  if (reasoningBox) reasoningBox.classList.add('done');
+  if (reasoningBox && aggregateReasoning) {
+    reasoningBox.textContent = aggregateReasoning;
+    reasoningBox.scrollTop = reasoningBox.scrollHeight;
+  }
+  // Reemplazar el mensaje thinking-msg por la respuesta final
+  removeThinkingMessage(thinkingMsg);
+  finishThinkingLog(thinkingLog, 'ok', elapsedMs);
+
+  pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${aggregateReasoning ? ' (razonamiento: '+aggregateReasoning.length+' chars)' : ''}`);
+
+  const reply = aggregateContent.trim() || aggregateReasoning.trim();
+  if (!reply) {
+    addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
+    return null;
+  }
+  return { reply, provider, model, reasoning: aggregateReasoning.trim() };
+}
+
+function ensureReasoningBox(thinkingMsg) {
+  if (!thinkingMsg) return null;
+  let box = thinkingMsg.querySelector('.reasoning-stream');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'reasoning-stream';
+    box.dataset.testid = 'reasoning-stream';
+    thinkingMsg.appendChild(box);
+  }
+  return box;
+}
+
+function throttle(fn, ms) {
+  let pending = null;
+  let lastCall = 0;
+  return (arg) => {
+    pending = arg;
+    const now = Date.now();
+    const wait = Math.max(0, ms - (now - lastCall));
+    setTimeout(() => {
+      if (pending !== null) { lastCall = Date.now(); fn(pending); pending = null; }
+    }, wait);
+  };
+}
+
 /* ---------- Indicadores de "pensando" ---------- */
-function addThinkingMessage() {
+function addThinkingMessage(withReasoning) {
   const el = document.createElement('div');
   el.className = 'msg jarvis thinking';
   el.dataset.testid = 'thinking-msg';
   el.innerHTML = `<span class="msg-pre">J.A.R.V.I.S.</span><span class="msg-text"><span class="thinking-spark">✦</span> Pensando<span class="thinking-dots"><span></span><span></span><span></span></span></span><span class="msg-time">${nowTime()}</span>`;
   $('#chat-history').appendChild(el);
+  if (withReasoning) ensureReasoningBox(el);
   scrollChat();
   return el;
 }
@@ -2156,6 +2306,22 @@ function bindEvents() {
     beep(660, 0.06, 'sine', 0.04);
     addJarvisMessage('Chat reiniciado, señor. ¿En qué puedo asistirle?');
   });
+  // Toggle RAZONAMIENTO (streaming en vivo del thinking de NVIDIA)
+  const reasoningToggle = $('#reasoning-toggle');
+  if (reasoningToggle) {
+    // restaurar estado guardado en sesión compartida
+    reasoningToggle.checked = STREAM_SETTINGS.showReasoning;
+    reasoningToggle.addEventListener('change', () => {
+      const on = reasoningToggle.checked;
+      STREAM_SETTINGS.showReasoning = on;
+      pushLog('sys', on ? '🧠 Razonamiento en vivo: ACTIVADO' : '🧠 Razonamiento en vivo: desactivado');
+      beep(on ? 1480 : 660, 0.06, 'square', 0.04);
+    });
+    // Sincronizar entre pestañas (si otra cambia el toggle, se actualiza acá)
+    window.TabsBridge?.on('session:storage', () => {
+      reasoningToggle.checked = STREAM_SETTINGS.showReasoning;
+    });
+  }
   // Connect agent
   $('#connect-btn').addEventListener('click', () => {
     STATE.agentConnected = !STATE.agentConnected;
