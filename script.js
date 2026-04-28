@@ -1331,12 +1331,59 @@ const JARVIS_OPEN_URL = [
   '[ABRIR:https://url-completa-aquí]',
   '',
   'Reglas:',
-  '- Sólo URLs http:// o https://. Resolvé tú mismo el dominio (ej: "youtube" → https://www.youtube.com, "gmail" → https://mail.google.com, "buscar gatos" → https://www.google.com/search?q=gatos, "twitter de elon" → https://twitter.com/elonmusk, "wikipedia iron man" → https://es.wikipedia.org/wiki/Iron_Man, "spotify" → https://open.spotify.com, "github de tony" → https://github.com/tony).',
+  '- Sólo URLs http:// o https://. Resolvé tú mismo el dominio (ej: "youtube" → https://www.youtube.com, "gmail" → https://mail.google.com, "buscar gatos" → https://www.google.com/search?q=gatos, "twitter de elon" → https://twitter.com/elonmusk, "wikipedia iron man" → https://es.wikipedia.org/wiki/Iron_Man, "spotify web" → https://open.spotify.com, "github de tony" → https://github.com/tony).',
   '- UNA sola etiqueta por respuesta.',
   '- Va al FINAL, en su propia línea, sin texto detrás.',
   '- Antes de la etiqueta, mencioná lo que estás haciendo de forma natural: "Abriendo YouTube, señor." / "Consultando Wikipedia." / "Procediendo con Google."',
   '- Si el usuario NO pide abrir nada, NO incluyas la etiqueta.',
   '- Para sitios sensibles (banca, login admin), sugerí abrirlos manualmente sin la etiqueta.',
+].join('\n');
+
+const JARVIS_OPEN_APP = [
+  '',
+  'CAPACIDAD ESPECIAL — ABRIR APLICACIONES NATIVAS:',
+  'Cuando el usuario te pida abrir una APP nativa (Spotify, WhatsApp, Discord, Telegram, VS Code, Steam, mail, llamar, mandar SMS, Zoom, Slack, Obsidian, etc.), incluí AL FINAL una etiqueta:',
+  '[APP:scheme:parametros]',
+  '',
+  'Reglas:',
+  '- Diferenciá [APP:] de [ABRIR:]. [APP:] es para apps nativas (lanza la app instalada). [ABRIR:] es para sitios web. Si el usuario duda o pide "lo que sea más rápido", usá [ABRIR:].',
+  '- NUNCA uses http: ni https: dentro de [APP:] (eso va en [ABRIR:]).',
+  '- NUNCA uses javascript:, data:, file:, vbscript:, blob: ni nada peligroso. La interfaz los bloquea por seguridad.',
+  '- Adaptá el scheme al [ENTORNO]: si la plataforma es Android usá schemes Android (intent://, whatsapp://, tg://, fb://, instagram://); si es Windows/Mac/Linux usá schemes desktop (vscode://, spotify:, discord://, steam://).',
+  '- UNA sola etiqueta por respuesta. Si el usuario pide app Y web, elegí app.',
+  '- Antes de la etiqueta, decí qué hacés: "Abriendo Spotify, señor." / "Iniciando llamada." / "Lanzando Visual Studio Code."',
+  '',
+  'Schemes que funcionan (multiplataforma salvo aclaración):',
+  '- spotify:                                   → Spotify (escritorio + Android)',
+  '- spotify:track:<id> | spotify:album:<id>    → tema/álbum específico',
+  '- whatsapp://send?phone=<E164> o ?text=<x>   → WhatsApp',
+  '- tg://resolve?domain=<usuario>              → Telegram (chat con usuario)',
+  '- tg://msg?to=<phone>                        → Telegram chat por número',
+  '- discord://                                  → Discord',
+  '- slack://open                                → Slack',
+  '- vscode://file/<absolute-path> | code://    → Visual Studio Code',
+  '- steam://run/<appid>                         → Steam (juego)',
+  '- steam://open/store                          → Steam Store',
+  '- zoommtg://zoom.us/join?confno=<id>          → Zoom',
+  '- obsidian://open?vault=<vault>               → Obsidian',
+  '- mailto:<email>?subject=<x>&body=<x>         → cliente de mail',
+  '- tel:+<E164>                                 → llamada',
+  '- sms:+<E164>?body=<x>                        → SMS',
+  '- geo:<lat>,<lng>?q=<query>                   → mapas',
+  '- ms-settings:                                → Configuración Windows',
+  '- vlc://                                      → VLC',
+  '- intent://...#Intent;scheme=<s>;package=<p>;end → Android Intent genérico',
+  '',
+  'Ejemplos válidos:',
+  '"abrí spotify" → "Abriendo Spotify, señor.\\n[APP:spotify:]"',
+  '"poné Bohemian Rhapsody" → "Reproduciendo Bohemian Rhapsody en Spotify.\\n[APP:spotify:search:Bohemian%20Rhapsody]"',
+  '"mandale wpp a +5491155551234" → "Abriendo WhatsApp, señor.\\n[APP:whatsapp://send?phone=5491155551234]"',
+  '"abrí telegram con juan" → "Abriendo Telegram con juan.\\n[APP:tg://resolve?domain=juan]"',
+  '"llamá al +54 911 5555 1234" → "Iniciando llamada.\\n[APP:tel:+5491155551234]"',
+  '"escribile mail a tony@stark.com" → "Componiendo correo a tony@stark.com.\\n[APP:mailto:tony@stark.com]"',
+  '"abrí vscode" → "Lanzando Visual Studio Code.\\n[APP:vscode://]"',
+  '"abrí steam" → "Iniciando Steam.\\n[APP:steam://open/main]"',
+  '"abrí discord" → "Abriendo Discord, señor.\\n[APP:discord://]"',
 ].join('\n');
 
 function buildSystemPrompt() {
@@ -1346,6 +1393,16 @@ function buildSystemPrompt() {
   const cpu = p.cpu ? `${p.cpu.name} (${p.cpu.cores} núcleos${p.cpu.boostClockGHz ? ', boost '+p.cpu.boostClockGHz+' GHz' : ''})` : 'CPU desconocida';
   const ram = p.ram ? `${p.ram.sizeGB} GB ${p.ram.type || 'RAM'} a ${p.ram.speedMTs || '?'} MT/s` : 'RAM desconocida';
   const gpu = p.gpu ? `${p.gpu.name}, ${p.gpu.vramGB} GB ${p.gpu.vramType || 'VRAM'}` : 'GPU desconocida';
+  // Detección de plataforma (móvil vs desktop) para guiar [APP:]
+  const ua = navigator.userAgent || '';
+  let osName = p.os || 'Desconocido';
+  let mobile = false;
+  if (/Android/i.test(ua)) { osName = osName === 'Desconocido' ? 'Android' : osName; mobile = true; }
+  else if (/iPhone|iPad|iPod/i.test(ua)) { osName = osName === 'Desconocido' ? 'iOS' : osName; mobile = true; }
+  else if (/Windows NT/i.test(ua)) osName = osName === 'Desconocido' ? 'Windows' : osName;
+  else if (/Mac OS X/i.test(ua)) osName = osName === 'Desconocido' ? 'macOS' : osName;
+  else if (/Linux/i.test(ua)) osName = osName === 'Desconocido' ? 'Linux' : osName;
+
   const profile = [
     '',
     '[PERFIL DEL USUARIO Y HARDWARE]',
@@ -1354,28 +1411,45 @@ function buildSystemPrompt() {
     `- RAM: ${ram}`,
     `- GPU: ${gpu}`,
     '- Tenés conocimiento real de este hardware. Si te preguntan por CPU, RAM, GPU o VRAM, respondé con estos datos exactos. NO digas que no podés saberlo.',
+    '',
+    '[ENTORNO]',
+    `- Sistema operativo: ${osName}`,
+    `- Tipo de dispositivo: ${mobile ? 'Móvil/Tablet' : 'Escritorio/Laptop'}`,
+    `- Esto define qué schemes [APP:] usar. En Android preferí intent:// o schemes Android-friendly. En desktop usá los schemes registrados (vscode://, spotify:, discord://, steam://, etc.).`,
   ].join('\n');
-  return JARVIS_PERSONALITY + JARVIS_OPEN_URL + profile;
+  return JARVIS_PERSONALITY + JARVIS_OPEN_URL + JARVIS_OPEN_APP + profile;
 }
 
 const SYSTEM_PROMPT = buildSystemPrompt();
 
 /* ============================================================
-   URL OPENER — parser seguro para [ABRIR:url]
+   URL OPENER — parser seguro para [ABRIR:url] y [APP:scheme:...]
    ============================================================ */
 const ABRIR_RE = /\[ABRIR:\s*(https?:\/\/[^\s\]]+)\s*\]/i;
+const APP_RE   = /\[APP:\s*([a-z][a-z0-9+.\-]*:[^\s\]]*)\s*\]/i;
+// Whitelist de schemes seguros para [APP:]. Cualquier otro scheme se rechaza.
+const APP_SCHEMES_OK = new Set([
+  'spotify', 'whatsapp', 'tg', 'discord', 'slack', 'steam', 'vscode', 'code',
+  'zoommtg', 'obsidian', 'mailto', 'tel', 'sms', 'geo', 'fb', 'instagram',
+  'youtube', 'twitter', 'snapchat', 'tiktok', 'linkedin', 'reddit', 'github',
+  'figma', 'notion', 'tableplus', 'postman', 'iterm', 'ssh', 'sftp',
+  'ms-settings', 'ms-word', 'ms-excel', 'ms-powerpoint', 'ms-outlook',
+  'vlc', 'mpv', 'audacity',
+  'intent',                             // Android Intent URLs
+  'web+spotify', 'web+discord',         // Progressive Web App schemes
+  'x-callback-url',                     // iOS callbacks
+]);
+const APP_SCHEMES_BLOCKED = /^(?:javascript|data|file|vbscript|jscript|livescript|mocha|blob|about|chrome|chrome-extension|moz-extension|view-source|filesystem):/i;
 
 function extractAndOpenUrl(text) {
   const m = ABRIR_RE.exec(text);
   if (!m) return { clean: text, opened: null };
   const url = m[1].trim();
-  // Validación de seguridad: solo http/https
   let safeUrl = null;
   try {
     const u = new URL(url);
     if (u.protocol === 'http:' || u.protocol === 'https:') safeUrl = u.href;
   } catch { /* invalid */ }
-  // Limpiar tag del texto a mostrar/leer
   const clean = text.replace(ABRIR_RE, '').replace(/\n{2,}/g, '\n').trim();
   if (safeUrl) {
     try {
@@ -1390,6 +1464,59 @@ function extractAndOpenUrl(text) {
   }
   return { clean, opened: null };
 }
+
+function extractAndOpenApp(text) {
+  const m = APP_RE.exec(text);
+  if (!m) return { clean: text, launched: null };
+  const raw = m[1].trim();
+  const clean = text.replace(APP_RE, '').replace(/\n{2,}/g, '\n').trim();
+
+  // Validación de seguridad
+  if (APP_SCHEMES_BLOCKED.test(raw)) {
+    pushLog('error', 'Scheme bloqueado por seguridad: ' + raw.slice(0, 40));
+    return { clean, launched: null };
+  }
+  // Extraer scheme (parte antes del primer ':')
+  const colonIdx = raw.indexOf(':');
+  if (colonIdx <= 0) return { clean, launched: null };
+  const scheme = raw.slice(0, colonIdx).toLowerCase();
+  if (!APP_SCHEMES_OK.has(scheme)) {
+    pushLog('warn', 'Scheme no permitido: ' + scheme + ' (no está en whitelist)');
+    return { clean, launched: null };
+  }
+  // Validar caracteres del payload (sin espacios, sin <>, sin script tags)
+  if (/[<>"']|<\/?script/i.test(raw)) {
+    pushLog('error', 'Payload de app contiene caracteres no permitidos');
+    return { clean, launched: null };
+  }
+
+  try {
+    // Para apps nativas, location.href es más confiable que window.open
+    // (window.open con scheme custom suele bloquearse como popup)
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = raw;
+    document.body.appendChild(iframe);
+    setTimeout(() => { try { iframe.remove(); } catch {} }, 2500);
+
+    // Fallback adicional: también probamos window.location en un timeout corto
+    // (algunas apps requieren un navigation event real)
+    setTimeout(() => {
+      try { window.location.href = raw; } catch {}
+    }, 50);
+
+    pushLog('sys', '🚀 Lanzando app: ' + scheme + '://...');
+    beep(1480, 0.08, 'square', 0.05);
+    return { clean, launched: raw, scheme };
+  } catch (e) {
+    pushLog('error', 'No se pudo lanzar app: ' + e.message);
+    return { clean, launched: null };
+  }
+}
+
+/* Exponer parser globalmente para tests de validación end-to-end */
+window.extractAndOpenApp = extractAndOpenApp;
+window.extractAndOpenUrl = extractAndOpenUrl;
 
 async function jarvisReply(userText) {
   Sphere.setMode('processing');
@@ -1431,10 +1558,13 @@ async function jarvisReply(userText) {
     }
     pushLog('sys', 'Agente respondió en ' + (data.model || 'gemini'));
 
-    // Detectar y ejecutar [ABRIR:url] antes de mostrar/leer
-    const { clean, opened } = extractAndOpenUrl(rawReply);
-    if (opened) pushLog('info', '🌐 Abriendo sitio solicitado: ' + opened);
-    addJarvisMessage(clean || rawReply);
+    // Detectar y ejecutar [ABRIR:url] o [APP:scheme] antes de mostrar/leer
+    let cleaned = rawReply;
+    const url = extractAndOpenUrl(cleaned); cleaned = url.clean;
+    if (url.opened) pushLog('info', '🌐 Abriendo sitio: ' + url.opened);
+    const app = extractAndOpenApp(cleaned); cleaned = app.clean;
+    if (app.launched) pushLog('info', '🚀 Intentando lanzar app: ' + app.scheme);
+    addJarvisMessage(cleaned || rawReply);
   } catch (e) {
     pushLog('error', 'Red: no pude alcanzar /api/agent — ' + (e.message || e));
     addJarvisMessage('Disculpe, señor. No pude alcanzar el endpoint del agente. Estoy operando sin núcleo cognitivo en este momento.');
