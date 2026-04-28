@@ -9,7 +9,7 @@ HUD holográfico estilo Iron Man — vanilla HTML/CSS/JS + Vercel Serverless Fun
 - Métricas reales del dispositivo: cores, RAM, batería, red, latencia, almacenamiento.
 
 ### IA y voz
-- **Chat real con cadena de fallback**: Gemini → Mistral → OpenRouter (Llama 3.3) → Hugging Face.
+- **Chat real con cadena de fallback**: NVIDIA Nemotron-3-Super-120B → Gemini → Mistral → OpenRouter (Llama 3.3) → Hugging Face.
 - **TTS** vía Gemini 2.5 Flash Preview TTS (voz neural Charon) + fallback Web Speech API.
 - **STT** vía MediaRecorder + Gemini transcription (funciona en Brave, donde `webkitSpeechRecognition` está bloqueado).
 
@@ -72,8 +72,9 @@ El parser ejecuta y le devuelve el resultado al modelo en un follow-up para que 
 ## Variables de entorno
 
 ```bash
-GEMINI_API_KEY=...           # principal
-GEMINI_API_KEY_2=...         # secundaria (mismo proveedor, otra cuota)
+NVIDIA_API_KEY=nvapi-...      # NVIDIA Nemotron (primer proveedor)
+GEMINI_API_KEY=...            # principal
+GEMINI_API_KEY_2=...          # secundaria (mismo proveedor, otra cuota)
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
 HUGGINGFACE_API_KEY=...

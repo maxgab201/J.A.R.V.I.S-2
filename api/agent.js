@@ -5,11 +5,12 @@
  * salta automáticamente al siguiente.
  *
  * Orden de proveedores:
- *   1. Gemini #1   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD
- *   2. Gemini #2   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD (key separada)
- *   3. Mistral     (mistral-large-latest) ← 2 RPM · 1B tokens/mes
- *   4. OpenRouter  (llama-3.3-70b-instruct:free) ← 20 RPM · 200 RPD
- *   5. Hugging Face (Llama-3.3-70B vía router) ← créditos pequeños
+ *   1. NVIDIA      (nvidia/nemotron-3-super-120b-a12b) ← reasoning, gratis
+ *   2. Gemini #1   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD
+ *   3. Gemini #2   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD (key separada)
+ *   4. Mistral     (mistral-large-latest) ← 2 RPM · 1B tokens/mes
+ *   5. OpenRouter  (llama-3.3-70b-instruct:free) ← 20 RPM · 200 RPD
+ *   6. Hugging Face (Llama-3.3-70B vía router) ← créditos pequeños
  *
  * Body esperado:  { messages, systemPrompt? }
  * Respuesta:      { reply, provider, model, fallbackChain? }
@@ -18,6 +19,20 @@
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
 const PROVIDERS = [
+  {
+    name: 'nvidia',
+    kind: 'openai',
+    model: 'nvidia/nemotron-3-super-120b-a12b',
+    keyEnv: 'NVIDIA_API_KEY',
+    endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    // Sobrescribe los parámetros generales para este modelo (Nemotron exige max_tokens alto)
+    gen: { temperature: 1, top_p: 0.95, max_tokens: 4096 },
+    // Parámetros extra propios de NVIDIA (modo "thinking" con reasoning budget)
+    extraBody: {
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 16384,
+    },
+  },
   {
     name: 'gemini-1',
     kind: 'gemini',
@@ -156,7 +171,7 @@ async function callGemini(p, key, messages, systemPrompt) {
   return reply;
 }
 
-/* --------- OpenAI-compatible (Mistral, OpenRouter, HF Router) --------- */
+/* --------- OpenAI-compatible (NVIDIA, Mistral, OpenRouter, HF Router) --------- */
 async function callOpenAI(p, key, messages, systemPrompt) {
   const oaiMessages = [];
   if (systemPrompt) oaiMessages.push({ role: 'system', content: systemPrompt });
@@ -172,24 +187,41 @@ async function callOpenAI(p, key, messages, systemPrompt) {
     'Content-Type': 'application/json',
     ...(p.extraHeaders || {}),
   };
+  const gen = { ...COMMON_GEN, ...(p.gen || {}) };
+  const body = {
+    model: p.model,
+    messages: oaiMessages,
+    temperature: gen.temperature,
+    top_p: gen.top_p,
+    max_tokens: gen.max_tokens,
+    stream: false,
+    ...(p.extraBody || {}),
+  };
+
+  // NVIDIA Nemotron tarda más que el resto cuando piensa: damos hasta 60s
+  const timeoutMs = p.name === 'nvidia' ? 60000 : 30000;
+
   const r = await timedFetch(p.endpoint, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: p.model,
-      messages: oaiMessages,
-      temperature: COMMON_GEN.temperature,
-      top_p: COMMON_GEN.top_p,
-      max_tokens: COMMON_GEN.max_tokens,
-    }),
-  }, 30000);
+    body: JSON.stringify(body),
+  }, timeoutMs);
   if (!r.ok) {
     const txt = await r.text().catch(() => '');
     throw new Error(`${p.name} ${r.status}: ${shorten(txt, 200)}`);
   }
   const data = await r.json();
-  const reply = data?.choices?.[0]?.message?.content;
+  let reply = data?.choices?.[0]?.message?.content;
+  // Algunos modelos con "thinking" devuelven el razonamiento en otro campo;
+  // si content viene vacío, usamos reasoning_content como fallback.
+  if ((!reply || !reply.trim()) && data?.choices?.[0]?.message?.reasoning_content) {
+    reply = data.choices[0].message.reasoning_content;
+  }
   if (!reply || !reply.trim()) throw new Error(`${p.name}: respuesta vacía`);
+  // Algunos modelos emiten <think>...</think> al inicio aunque pidamos no thinking;
+  // los limpiamos antes de devolver al cliente.
+  reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (!reply) throw new Error(`${p.name}: respuesta vacía tras limpiar thinking`);
   return reply;
 }
 
