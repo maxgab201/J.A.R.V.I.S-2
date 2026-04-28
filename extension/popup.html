@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>J.A.R.V.I.S. Tab Controller</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: 'Share Tech Mono', ui-monospace, Menlo, monospace;
+      background: radial-gradient(circle at 50% 0%, #0a1a2e 0%, #050a14 70%);
+      color: #b8e8ff;
+      width: 320px;
+      padding: 18px 16px;
+      border: 1px solid #1a3a5e;
+    }
+    h1 {
+      font-family: 'Orbitron', sans-serif;
+      font-size: 14px;
+      letter-spacing: 2px;
+      margin: 0 0 4px;
+      color: #00d4ff;
+      text-shadow: 0 0 6px rgba(0,212,255,.5);
+    }
+    .sub { font-size: 10px; color: #5a7a96; letter-spacing: 1px; margin-bottom: 14px; }
+    .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #1a3a5e; font-size: 11px; }
+    .row:first-of-type { border-top: 0; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+    .ok    { background:#39ff7a; color:#39ff7a; }
+    .warn  { background:#ffa500; color:#ffa500; }
+    code { background: rgba(0,212,255,.08); padding: 1px 5px; border-radius: 3px; color:#9ddfff; }
+    .hint {
+      margin-top: 14px; padding: 10px; background: rgba(0,40,80,.4);
+      border-left: 2px solid #00d4ff; font-size: 10px; line-height: 1.5; color: #9ddfff;
+    }
+    a { color: #00d4ff; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>J.A.R.V.I.S. TAB CONTROLLER</h1>
+  <div class="sub">v1.0.0 · MARK VII</div>
+
+  <div class="row"><span class="dot ok"></span> Service worker activo</div>
+  <div class="row"><span class="dot ok"></span> Permisos: <code>tabs</code> <code>scripting</code></div>
+  <div class="row"><span class="dot warn"></span> Solo activo en pestañas de la web J.A.R.V.I.S.</div>
+
+  <div class="hint">
+    Esta extensión permite a J.A.R.V.I.S. listar, activar, cerrar, leer y controlar otras pestañas del navegador.<br><br>
+    Abrí la web de J.A.R.V.I.S. en una pestaña y pedile: "lista todas las pestañas abiertas" o "pausá el video de YouTube".
+  </div>
+</body>
+</html>

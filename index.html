@@ -150,6 +150,24 @@
       <aside class="sidebar right" id="right-sidebar">
 
         <div class="panel">
+          <div class="panel-header"><span class="panel-title">PESTAÑAS CONECTADAS</span><span class="hr"></span></div>
+          <div class="tabs-status" id="tabs-status">
+            <div class="tabs-row" data-testid="ext-status-row">
+              <span class="tabs-dot dot-orange" id="ext-dot"></span>
+              <span class="tabs-lbl" id="ext-lbl">EXTENSIÓN: NO DETECTADA</span>
+              <button class="ghost-btn ext-install-btn" id="ext-install-btn" data-testid="ext-install-btn" title="Descargar extensión">INSTALAR</button>
+            </div>
+            <div class="tabs-row" data-testid="peers-status-row">
+              <span class="tabs-dot dot-green"></span>
+              <span class="tabs-lbl">PESTAÑAS DEL SITIO: <b id="peers-count">1</b></span>
+              <span class="tab-id" id="my-tab-id" title="ID de esta pestaña">--</span>
+            </div>
+          </div>
+          <div class="peers-list" id="peers-list" data-testid="peers-list"></div>
+          <div class="ext-tabs-list" id="ext-tabs-list" data-testid="ext-tabs-list"></div>
+        </div>
+
+        <div class="panel">
           <div class="panel-header"><span class="panel-title">REGISTROS DEL SISTEMA</span><button class="ghost-btn" id="clear-logs" data-testid="clear-logs">LIMPIAR LOGS</button></div>
           <div class="logs" id="logs" data-testid="logs"></div>
         </div>
@@ -187,6 +205,7 @@
   </div>
 
   <script defer src="system-profile.js"></script>
+  <script defer src="tabs-bridge.js"></script>
   <script defer src="script.js"></script>
 </body>
 </html>

@@ -5,5 +5,20 @@
       "memory": 512,
       "maxDuration": 30
     }
-  }
+  },
+  "headers": [
+    {
+      "source": "/extension/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/extension/jarvis-tab-controller.zip",
+      "headers": [
+        { "key": "Content-Type", "value": "application/zip" },
+        { "key": "Content-Disposition", "value": "attachment; filename=\"jarvis-tab-controller.zip\"" }
+      ]
+    }
+  ]
 }

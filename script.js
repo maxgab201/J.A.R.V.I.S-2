@@ -1386,6 +1386,39 @@ const JARVIS_OPEN_APP = [
   '"abrí discord" → "Abriendo Discord, señor.\\n[APP:discord://]"',
 ].join('\n');
 
+const JARVIS_TABS_CTRL = [
+  '',
+  'CAPACIDAD ESPECIAL — INTERACTUAR CON OTRAS PESTAÑAS DEL NAVEGADOR:',
+  'Esta capacidad sólo está disponible si la EXTENSIÓN J.A.R.V.I.S. Tab Controller está instalada (PC con Chrome/Edge/Brave). En móvil NO está disponible: si te piden algo de pestañas en móvil, decí que requiere PC con la extensión.',
+  '',
+  'Cuando el usuario te pida listar, leer, cambiar, cerrar o controlar otras pestañas (YouTube, Gmail, Twitter, etc.), incluí AL FINAL una etiqueta del formato:',
+  '[TABS:<acción>:<args>]',
+  '',
+  'Acciones disponibles:',
+  '- [TABS:list]                              → listar todas las pestañas abiertas',
+  '- [TABS:switch:<tabId>]                    → activar (cambiar) a la pestaña <tabId>',
+  '- [TABS:close:<tabId>]                     → cerrar la pestaña <tabId>',
+  '- [TABS:open:<https://url>]                → abrir nueva pestaña con URL (similar a [ABRIR:] pero usando la extensión)',
+  '- [TABS:read:<tabId>]                      → leer contenido (resumen) de la pestaña',
+  '- [TABS:read:<tabId>:full]                 → leer contenido completo (hasta 8000 chars)',
+  '- [TABS:control:<tabId>:<accion>]          → controlar pestaña. accion ∈ {play, pause, toggle, mute, scrollTop, scrollBottom, reload, back, forward}',
+  '- [TABS:control:<tabId>:scrollBy:<y>]      → scroll vertical en pixeles (ej: scrollBy:600)',
+  '- [TABS:control:<tabId>:seek:<segundos>]   → saltar a tiempo en video (ej: seek:120)',
+  '- [TABS:control:<tabId>:volume:<0-1>]      → ajustar volumen (ej: volume:0.5)',
+  '',
+  'Reglas:',
+  '- UNA sola etiqueta [TABS:...] por respuesta. Va al FINAL en su propia línea.',
+  '- Si el usuario dice "lista las pestañas" o "qué tengo abierto" → usá [TABS:list]. Después de recibir la lista (te llegará en el siguiente turno como mensaje del sistema con los IDs reales), respondé con resumen y ofrecé acciones.',
+  '- Para acciones específicas que necesitan tabId, primero LISTÁ las pestañas si no conocés el ID. NO inventes IDs.',
+  '- Si no hay extensión instalada (te lo dirá la nota [TABS-EXT] del entorno), avisá al usuario con elegancia: "Para esa función necesito que instale la extensión J.A.R.V.I.S. Tab Controller en el navegador, señor."',
+  '- Si el usuario menciona contenido de una pestaña concreta por nombre ("¿qué dice el video de YouTube?"), encadená [TABS:list] primero; en el siguiente turno usarás el ID correcto.',
+  '',
+  'CAPACIDAD ESPECIAL — COMUNICAR ENTRE PESTAÑAS DE J.A.R.V.I.S. (mismo sitio):',
+  'Si el usuario tiene MÚLTIPLES pestañas de la web J.A.R.V.I.S. abiertas (te lo indica [PEERS] en el entorno), podés enviar un mensaje a las otras instancias usando:',
+  '[PEERS:msg:<texto del mensaje>]',
+  'El texto se mostrará en el chat de las otras pestañas como mensaje entrante.',
+].join('\n');
+
 function buildSystemPrompt() {
   const p = window.SYSTEM_PROFILE || {};
   const userTitle = p.user?.title || 'señor';
@@ -1417,7 +1450,7 @@ function buildSystemPrompt() {
     `- Tipo de dispositivo: ${mobile ? 'Móvil/Tablet' : 'Escritorio/Laptop'}`,
     `- Esto define qué schemes [APP:] usar. En Android preferí intent:// o schemes Android-friendly. En desktop usá los schemes registrados (vscode://, spotify:, discord://, steam://, etc.).`,
   ].join('\n');
-  return JARVIS_PERSONALITY + JARVIS_OPEN_URL + JARVIS_OPEN_APP + profile;
+  return JARVIS_PERSONALITY + JARVIS_OPEN_URL + JARVIS_OPEN_APP + JARVIS_TABS_CTRL + profile;
 }
 
 const SYSTEM_PROMPT = buildSystemPrompt();
@@ -1518,7 +1551,302 @@ function extractAndOpenApp(text) {
 window.extractAndOpenApp = extractAndOpenApp;
 window.extractAndOpenUrl = extractAndOpenUrl;
 
-async function jarvisReply(userText) {
+/* ============================================================
+   TABS BRIDGE — parsers y UI
+   ============================================================ */
+const TABS_RE  = /\[TABS:\s*([a-z]+)(?::([^\]]+))?\]/i;
+const PEERS_RE = /\[PEERS:\s*msg:([^\]]+)\]/i;
+
+/**
+ * Procesa etiquetas [TABS:...] devueltas por el modelo y ejecuta la acción.
+ * Devuelve { clean, executed, summary } y, si hay datos a inyectar al modelo
+ * en el siguiente turno (lista de pestañas, lectura, etc.), retorna `feedback`.
+ */
+async function extractAndExecuteTabs(text) {
+  const m = TABS_RE.exec(text);
+  if (!m) return { clean: text, executed: null };
+  const action = (m[1] || '').toLowerCase();
+  const args = (m[2] || '').trim();
+  const clean = text.replace(TABS_RE, '').replace(/\n{2,}/g, '\n').trim();
+
+  if (!window.TabsBridge?.ext.isReady()) {
+    pushLog('warn', 'TABS: extensión no detectada');
+    return { clean, executed: null, feedback: '[TABS-RESULT] Extensión no instalada — esta función requiere J.A.R.V.I.S. Tab Controller en PC.' };
+  }
+
+  try {
+    let data, summary = '';
+    const ext = window.TabsBridge.ext;
+    switch (action) {
+      case 'list': {
+        data = await ext.listTabs();
+        summary = `Lista de ${data.length} pestañas obtenida.`;
+        renderExtTabs(data);
+        const compact = data.map(t => ({ id: t.id, title: (t.title || '').slice(0, 60), url: t.url, active: t.active })).slice(0, 25);
+        return { clean, executed: 'list', summary, feedback: '[TABS-RESULT:list] ' + JSON.stringify(compact) };
+      }
+      case 'switch': {
+        const tabId = parseInt(args, 10);
+        data = await ext.activateTab(tabId);
+        summary = `Pestaña ${tabId} activada: ${data.title || ''}`;
+        return { clean, executed: 'switch', summary, feedback: `[TABS-RESULT:switch] ok tabId=${tabId} title="${(data.title||'').slice(0,80)}"` };
+      }
+      case 'close': {
+        const tabId = parseInt(args, 10);
+        await ext.closeTab(tabId);
+        summary = `Pestaña ${tabId} cerrada.`;
+        return { clean, executed: 'close', summary, feedback: `[TABS-RESULT:close] ok tabId=${tabId}` };
+      }
+      case 'open': {
+        const url = args;
+        data = await ext.openTab(url, true);
+        summary = `Nueva pestaña abierta: ${url}`;
+        return { clean, executed: 'open', summary, feedback: `[TABS-RESULT:open] ok tabId=${data.id}` };
+      }
+      case 'read': {
+        const parts = args.split(':');
+        const tabId = parseInt(parts[0], 10);
+        const mode = parts[1] || 'summary';
+        data = await ext.readTab(tabId, { mode });
+        summary = `Leí "${(data.title||'').slice(0,40)}".`;
+        // truncamos lo que va al modelo
+        const compact = JSON.stringify(data).slice(0, 6000);
+        return { clean, executed: 'read', summary, feedback: `[TABS-RESULT:read] ` + compact };
+      }
+      case 'control': {
+        // args: "<tabId>:<accion>" o "<tabId>:<accion>:<extra>"
+        const parts = args.split(':');
+        const tabId = parseInt(parts[0], 10);
+        const ctlAction = (parts[1] || '').toLowerCase();
+        const extra = parts.slice(2).join(':');
+        const ctlArgs = {};
+        if (ctlAction === 'scrollby') { ctlArgs.y = parseInt(extra, 10) || 400; }
+        else if (ctlAction === 'seek') { ctlArgs.to = parseFloat(extra) || 0; }
+        else if (ctlAction === 'volume') { ctlArgs.level = parseFloat(extra); }
+        const realAction = ctlAction === 'scrollby' ? 'scrollBy'
+          : ctlAction === 'scrolltop' ? 'scrollTop'
+          : ctlAction === 'scrollbottom' ? 'scrollBottom'
+          : ctlAction;
+        data = await ext.controlTab(tabId, realAction, ctlArgs);
+        summary = `Acción "${ctlAction}" en pestaña ${tabId}.`;
+        return { clean, executed: 'control', summary, feedback: `[TABS-RESULT:control:${ctlAction}] ${JSON.stringify(data)}` };
+      }
+      default:
+        return { clean, executed: null, feedback: '[TABS-RESULT] acción no soportada: ' + action };
+    }
+  } catch (e) {
+    pushLog('error', 'TABS: ' + (e.message || e));
+    return { clean, executed: null, feedback: '[TABS-RESULT:error] ' + (e.message || String(e)).slice(0, 200) };
+  }
+}
+
+/** Procesa [PEERS:msg:...] enviando el texto a las otras pestañas del mismo sitio. */
+function extractAndSendPeerMsg(text) {
+  const m = PEERS_RE.exec(text);
+  if (!m) return { clean: text, sent: null };
+  const msg = (m[1] || '').trim();
+  const clean = text.replace(PEERS_RE, '').replace(/\n{2,}/g, '\n').trim();
+  if (msg && window.TabsBridge) {
+    window.TabsBridge.sendChat(msg);
+    pushLog('sys', 'Mensaje a pestañas pares: "' + msg.slice(0, 50) + '"');
+  }
+  return { clean, sent: msg };
+}
+
+/* ============================================================
+   PANEL UI: PESTAÑAS CONECTADAS
+   ============================================================ */
+function renderPeersList() {
+  const wrap = $('#peers-list');
+  if (!wrap || !window.TabsBridge) return;
+  const peers = window.TabsBridge.listPeers();
+  $('#peers-count').textContent = peers.length + 1; // +1 = la pestaña actual
+
+  if (!peers.length) {
+    wrap.innerHTML = '<div class="cmd-empty" style="padding:6px;color:var(--cy-60);font-size:10px;">Esta es la única pestaña activa</div>';
+    return;
+  }
+  wrap.innerHTML = '';
+  peers.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'peer-item';
+    row.dataset.testid = 'peer-' + p.id;
+    row.innerHTML = `<span class="peer-ico">●</span><span class="peer-name"></span><span class="peer-id"></span>`;
+    row.querySelector('.peer-name').textContent = p.name;
+    row.querySelector('.peer-id').textContent = p.id.slice(2, 8);
+    row.title = 'Click para enviar un saludo';
+    row.addEventListener('click', () => {
+      const msg = `(saludo desde ${window.TabsBridge.tabId.slice(2,6).toUpperCase()})`;
+      window.TabsBridge.sendChat(msg);
+      row.classList.add('peer-msg-pulse');
+      setTimeout(() => row.classList.remove('peer-msg-pulse'), 600);
+    });
+    wrap.appendChild(row);
+  });
+}
+
+function renderExtTabs(tabs) {
+  const wrap = $('#ext-tabs-list');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!tabs || !tabs.length) return;
+  const title = document.createElement('div');
+  title.className = 'ext-tabs-section-title';
+  title.textContent = 'PESTAÑAS DEL NAVEGADOR (' + tabs.length + ')';
+  wrap.appendChild(title);
+
+  tabs.slice(0, 30).forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'ext-tab-item' + (t.active ? ' active' : '');
+    row.dataset.testid = 'ext-tab-' + t.id;
+    let host = '';
+    try { host = new URL(t.url).hostname.replace(/^www\./, ''); } catch {}
+    const fav = t.favIconUrl ? `<span class="ext-fav" style="background-image:url('${t.favIconUrl.replace(/'/g, '')}')"></span>` : `<span class="ext-fav" style="color:var(--cy)">▣</span>`;
+    row.innerHTML = `${fav}<span class="ext-tab-title"></span><span class="ext-tab-host"></span><span class="ext-tab-actions"><button title="Activar" data-act="switch">→</button><button title="Cerrar" data-act="close">×</button></span>`;
+    row.querySelector('.ext-tab-title').textContent = (t.title || host || 'Pestaña ' + t.id).slice(0, 38);
+    row.querySelector('.ext-tab-host').textContent = host;
+    row.title = t.url;
+    row.querySelector('[data-act="switch"]').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await window.TabsBridge.ext.activateTab(t.id); pushLog('sys', 'Pestaña activada: ' + (t.title||'').slice(0,40)); }
+      catch (err) { pushLog('error', 'No se pudo activar: ' + err.message); }
+    });
+    row.querySelector('[data-act="close"]').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await window.TabsBridge.ext.closeTab(t.id); row.remove(); pushLog('sys', 'Pestaña cerrada'); }
+      catch (err) { pushLog('error', 'No se pudo cerrar: ' + err.message); }
+    });
+    row.addEventListener('click', () => window.TabsBridge.ext.activateTab(t.id).catch(()=>{}));
+    wrap.appendChild(row);
+  });
+}
+
+function updateExtensionUI(ready, info) {
+  const dot = $('#ext-dot');
+  const lbl = $('#ext-lbl');
+  const btn = $('#ext-install-btn');
+  if (!dot || !lbl) return;
+  if (ready) {
+    dot.classList.add('connected');
+    dot.classList.remove('dot-orange');
+    dot.classList.add('dot-green');
+    lbl.innerHTML = `EXTENSIÓN: ACTIVA <b>v${info?.version || '?'}</b>`;
+    if (btn) btn.style.display = 'none';
+    pushLog('sys', `Extensión J.A.R.V.I.S. Tab Controller v${info?.version || '?'} detectada`);
+    // refrescar lista de pestañas automáticamente
+    refreshExtTabs();
+  } else {
+    dot.classList.remove('connected', 'dot-green');
+    dot.classList.add('dot-orange');
+    lbl.textContent = 'EXTENSIÓN: NO DETECTADA';
+    if (btn) btn.style.display = '';
+  }
+}
+
+let extTabsRefreshTimer = null;
+async function refreshExtTabs() {
+  if (!window.TabsBridge?.ext.isReady()) return;
+  try {
+    const tabs = await window.TabsBridge.ext.listTabs();
+    renderExtTabs(tabs);
+  } catch (e) {
+    pushLog('warn', 'No pude listar pestañas: ' + e.message);
+  }
+}
+
+function showExtInstallModal() {
+  if ($('#ext-modal')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'ext-modal-overlay';
+  overlay.id = 'ext-modal';
+  overlay.innerHTML = `
+    <div class="ext-modal" data-testid="ext-install-modal">
+      <button class="ext-modal-close" id="ext-modal-close" aria-label="Cerrar">×</button>
+      <h2>EXTENSIÓN J.A.R.V.I.S. TAB CONTROLLER</h2>
+      <p style="color:var(--cy-60);font-size:11px;letter-spacing:1px;">Permite a J.A.R.V.I.S. controlar otras pestañas del navegador (PC con Chrome/Edge/Brave).</p>
+      <h3>QUÉ HABILITA</h3>
+      <ul style="font-size:12px;line-height:1.7;padding-left:22px;color:var(--cy-80);">
+        <li>Listar todas las pestañas abiertas</li>
+        <li>Cambiar entre pestañas, abrirlas y cerrarlas</li>
+        <li>Leer el contenido de una pestaña (resumen o texto completo)</li>
+        <li>Pausar / reproducir videos (YouTube, Twitch, etc.)</li>
+        <li>Hacer scroll, recargar, ir adelante/atrás, ajustar volumen</li>
+      </ul>
+      <h3>INSTALACIÓN (modo desarrollador, 30 segundos)</h3>
+      <ol>
+        <li>Descargá el ZIP de la extensión:
+          <div style="margin-top:6px;"><a href="extension/jarvis-tab-controller.zip" download class="ghost-btn" style="padding:5px 10px;font-size:10px;letter-spacing:1px;display:inline-block;text-decoration:none;border:1px solid var(--cy);color:var(--cy);" data-testid="ext-download-zip">DESCARGAR ZIP</a></div>
+        </li>
+        <li>Descomprimí el ZIP en una carpeta cualquiera.</li>
+        <li>Abrí <code>chrome://extensions</code> (o <code>edge://extensions</code> / <code>brave://extensions</code>).</li>
+        <li>Activá <b>Modo desarrollador</b> (esquina superior derecha).</li>
+        <li>Click en <b>Cargar descomprimida</b> y seleccioná la carpeta donde descomprimiste.</li>
+        <li>Recargá esta página. El indicador "EXTENSIÓN" pasará a verde.</li>
+      </ol>
+      <p style="font-size:11px;color:var(--cy-60);margin-top:14px;">En móvil esta función no está disponible: los navegadores móviles no permiten extensiones que controlen pestañas (excepto Kiwi/Yandex en Android, que sí soportan esta extensión).</p>
+      <div class="ext-modal-actions">
+        <a href="extension/jarvis-tab-controller.zip" download data-testid="ext-modal-download">DESCARGAR EXTENSIÓN</a>
+        <button id="ext-modal-ok">ENTENDIDO</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('#ext-modal-close').addEventListener('click', close);
+  overlay.querySelector('#ext-modal-ok').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+}
+window.showExtInstallModal = showExtInstallModal;
+window.refreshExtTabs = refreshExtTabs;
+
+/* Suscribirse a eventos del bridge cuando esté disponible */
+function bindTabsBridge() {
+  if (!window.TabsBridge) return;
+  const TB = window.TabsBridge;
+
+  // Mostrar tab id
+  const myIdEl = $('#my-tab-id');
+  if (myIdEl) myIdEl.textContent = TB.tabId.slice(2, 8).toUpperCase();
+
+  // Eventos de peers (pestañas del mismo sitio)
+  TB.on('peer:join',  () => renderPeersList());
+  TB.on('peer:leave', () => renderPeersList());
+  TB.on('peer:chat', ({ from, name, text }) => {
+    pushLog('info', `📨 Mensaje de ${name}: "${text.slice(0, 60)}"`);
+    addPeerMessage(name, text);
+  });
+
+  // Eventos de extensión
+  TB.on('ext:ready', (info) => updateExtensionUI(true, info));
+  TB.on('ext:event', ({ event }) => {
+    // pestaña activa cambió/se cerró → refrescar
+    if (extTabsRefreshTimer) clearTimeout(extTabsRefreshTimer);
+    extTabsRefreshTimer = setTimeout(refreshExtTabs, 400);
+  });
+
+  // Botón instalar
+  $('#ext-install-btn')?.addEventListener('click', showExtInstallModal);
+
+  // Render inicial
+  renderPeersList();
+  setInterval(renderPeersList, 4000);
+
+  // Probe periódico de estado de la extensión
+  TB.ext.pingExt().then((info) => updateExtensionUI(true, info)).catch(() => updateExtensionUI(false));
+}
+
+function addPeerMessage(name, text) {
+  const time = nowTime();
+  const el = document.createElement('div');
+  el.className = 'msg peer';
+  el.innerHTML = `<span class="msg-pre"></span><span class="msg-text"></span><span class="msg-time">${time}</span>`;
+  el.querySelector('.msg-pre').textContent = (name || 'PEER').toUpperCase().slice(0, 10);
+  el.querySelector('.msg-text').textContent = text;
+  $('#chat-history').appendChild(el);
+  scrollChat();
+  beep(880, 0.05, 'sine', 0.04);
+}
+
+async function jarvisReply(userText, _followUpDepth = 0) {
   Sphere.setMode('processing');
 
   // Preparar historial (últimos 12 turnos para mantener contexto)
@@ -1530,7 +1858,9 @@ async function jarvisReply(userText) {
   const m = STATE.metrics;
   const bat = Device.getBattery();
   const net = Device.getNetwork();
-  const ctx = `[Telemetría actual del HUD: CPU ${Math.round(m.cpu)}% · RAM ${Math.round(m.ram)}% (${(m.ramUsedGB||0).toFixed(2)}/${(m.ramTotalGB||0).toFixed(1)} GB heap) · Cores ${Device.getCores()} · Red ${net.type} ${net.downlink} Mbps RTT ${net.rtt}ms · Batería ${bat.supported ? Math.round(bat.level)+'% '+(bat.charging?'cargando':'') : 'n/d'} · Navegador ${Device.getInfo().browser} en ${Device.getInfo().os}]`;
+  const peers = window.TabsBridge ? window.TabsBridge.listPeers() : [];
+  const extReady = !!window.TabsBridge?.ext.isReady();
+  const ctx = `[Telemetría actual del HUD: CPU ${Math.round(m.cpu)}% · RAM ${Math.round(m.ram)}% (${(m.ramUsedGB||0).toFixed(2)}/${(m.ramTotalGB||0).toFixed(1)} GB heap) · Cores ${Device.getCores()} · Red ${net.type} ${net.downlink} Mbps RTT ${net.rtt}ms · Batería ${bat.supported ? Math.round(bat.level)+'% '+(bat.charging?'cargando':'') : 'n/d'} · Navegador ${Device.getInfo().browser} en ${Device.getInfo().os}]\n[TABS-EXT] ${extReady ? 'instalada y activa' : 'NO instalada (no podés usar [TABS:...])'}\n[PEERS] ${peers.length} pestañas pares de J.A.R.V.I.S. abiertas (mismo sitio)`;
 
   try {
     const r = await fetch('/api/agent', {
@@ -1565,13 +1895,30 @@ async function jarvisReply(userText) {
       }
     }
 
-    // Detectar y ejecutar [ABRIR:url] o [APP:scheme] antes de mostrar/leer
+    // Detectar y ejecutar [ABRIR:url] o [APP:scheme] o [TABS:...] o [PEERS:msg:...]
     let cleaned = rawReply;
     const url = extractAndOpenUrl(cleaned); cleaned = url.clean;
     if (url.opened) pushLog('info', '🌐 Abriendo sitio: ' + url.opened);
     const app = extractAndOpenApp(cleaned); cleaned = app.clean;
     if (app.launched) pushLog('info', '🚀 Intentando lanzar app: ' + app.scheme);
+    const peerMsg = extractAndSendPeerMsg(cleaned); cleaned = peerMsg.clean;
+    if (peerMsg.sent) pushLog('info', '👥 Mensaje a pares enviado');
+
+    // [TABS:...] requiere ejecución asíncrona y posible follow-up al modelo
+    const tabsRes = await extractAndExecuteTabs(cleaned);
+    cleaned = tabsRes.clean;
+
     addJarvisMessage(cleaned || rawReply);
+
+    // Si hubo resultado de TABS, lo enviamos como mensaje del usuario simulando
+    // contexto del sistema, para que el modelo elabore (máx. 1 follow-up).
+    if (tabsRes.feedback && _followUpDepth < 1) {
+      // Pequeña pausa para que termine el typewriter antes
+      setTimeout(() => {
+        STATE.chatHistory.push({ role: 'user', text: tabsRes.feedback, time: nowTime() });
+        jarvisReply(tabsRes.feedback, _followUpDepth + 1);
+      }, 600);
+    }
   } catch (e) {
     pushLog('error', 'Red: no pude alcanzar /api/agent — ' + (e.message || e));
     addJarvisMessage('Disculpe, señor. No pude alcanzar el endpoint del agente. Estoy operando sin núcleo cognitivo en este momento.');
@@ -1860,6 +2207,46 @@ async function init() {
 
   // events
   bindEvents();
+  bindTabsBridge();
+
+  // Restaurar historial de chat compartido (otra pestaña puede haber escrito)
+  try {
+    const sess = window.TabsBridge?.Session.load() || {};
+    if (Array.isArray(sess.chatHistory) && sess.chatHistory.length && !STATE.chatHistory.length) {
+      // sólo si esta pestaña recién abre y no tiene historial propio
+      sess.chatHistory.slice(-20).forEach(m => {
+        if (m.role === 'user') {
+          STATE.chatHistory.push(m);
+          const el = document.createElement('div');
+          el.className = 'msg user';
+          el.innerHTML = `<span class="msg-pre">TÚ</span><span class="msg-text"></span><span class="msg-time">${m.time||''}</span>`;
+          el.querySelector('.msg-text').textContent = m.text;
+          $('#chat-history').appendChild(el);
+        } else {
+          STATE.chatHistory.push(m);
+          const el = document.createElement('div');
+          el.className = 'msg jarvis';
+          el.innerHTML = `<span class="msg-pre">J.A.R.V.I.S.</span><span class="msg-text"></span><span class="msg-time">${m.time||''}</span>`;
+          el.querySelector('.msg-text').textContent = m.text;
+          $('#chat-history').appendChild(el);
+        }
+      });
+      scrollChat();
+      pushLog('info', '🔄 Historial restaurado de sesión compartida (' + STATE.chatHistory.length + ' mensajes)');
+    }
+  } catch (e) { /* ignore */ }
+
+  // Persistir en sesión cuando hay cambios — debounced
+  let persistTimer = null;
+  const persistSession = () => {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      try { window.TabsBridge?.Session.patch({ chatHistory: STATE.chatHistory.slice(-30) }); } catch {}
+    }, 1500);
+  };
+  // Hook simple: cada vez que se llama addUserMessage o addJarvisMessage queda en STATE.chatHistory.
+  // Le añadimos un wrapper a setInterval para persistir.
+  setInterval(persistSession, 5000);
 
   // online / offline detection
   window.addEventListener('online',  () => { pushLog('sys', 'Conexión a red restablecida'); renderDeviceInfo(); });

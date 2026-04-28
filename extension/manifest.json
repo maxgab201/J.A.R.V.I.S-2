@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "J.A.R.V.I.S. Tab Controller",
+  "short_name": "JARVIS Tabs",
+  "version": "1.0.0",
+  "description": "Permite a J.A.R.V.I.S. listar, activar, cerrar, leer y controlar otras pestañas del navegador (YouTube, Gmail, etc.).",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.vercel.app/*",
+        "https://localhost/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://*.emergentagent.com/*"
+      ],
+      "js": ["content-bridge.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "J.A.R.V.I.S. Tab Controller",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
