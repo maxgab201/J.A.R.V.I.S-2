@@ -1849,6 +1849,10 @@ function addPeerMessage(name, text) {
 async function jarvisReply(userText, _followUpDepth = 0) {
   Sphere.setMode('processing');
 
+  // Indicadores: mensaje "pensando..." en el chat + log "pensando..."
+  const thinkingMsg = addThinkingMessage();
+  const thinkingLog = pushLog({ lv: 'think', m: 'Pensando', thinkingActive: true, id: 'think-' + Date.now() });
+
   // Preparar historial (últimos 12 turnos para mantener contexto)
   const history = STATE.chatHistory
     .slice(-12)
@@ -1862,6 +1866,7 @@ async function jarvisReply(userText, _followUpDepth = 0) {
   const extReady = !!window.TabsBridge?.ext.isReady();
   const ctx = `[Telemetría actual del HUD: CPU ${Math.round(m.cpu)}% · RAM ${Math.round(m.ram)}% (${(m.ramUsedGB||0).toFixed(2)}/${(m.ramTotalGB||0).toFixed(1)} GB heap) · Cores ${Device.getCores()} · Red ${net.type} ${net.downlink} Mbps RTT ${net.rtt}ms · Batería ${bat.supported ? Math.round(bat.level)+'% '+(bat.charging?'cargando':'') : 'n/d'} · Navegador ${Device.getInfo().browser} en ${Device.getInfo().os}]\n[TABS-EXT] ${extReady ? 'instalada y activa' : 'NO instalada (no podés usar [TABS:...])'}\n[PEERS] ${peers.length} pestañas pares de J.A.R.V.I.S. abiertas (mismo sitio)`;
 
+  const t0 = performance.now();
   try {
     const r = await fetch('/api/agent', {
       method: 'POST',
@@ -1873,25 +1878,30 @@ async function jarvisReply(userText, _followUpDepth = 0) {
     });
 
     if (!r.ok) {
+      removeThinkingMessage(thinkingMsg);
+      finishThinkingLog(thinkingLog, 'fail');
       const err = await r.json().catch(() => ({}));
       const detail = err.error || ('HTTP ' + r.status);
-      pushLog('error', 'Agente Gemini: ' + detail);
-      addJarvisMessage(`Disculpe, señor. La conexión con el núcleo cognitivo falló (${detail}). Verifique que la clave de Gemini esté configurada.`);
+      pushLog('error', '🛑 Núcleo cognitivo: ' + detail);
+      addJarvisMessage(`Disculpe, señor. La conexión con el núcleo cognitivo falló (${detail}).`);
       return;
     }
 
     const data = await r.json();
+    const elapsedMs = Math.round(performance.now() - t0);
+    removeThinkingMessage(thinkingMsg);
+    finishThinkingLog(thinkingLog, 'ok', elapsedMs);
+
     const rawReply = (data.reply || '').trim();
     if (!rawReply) {
       addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
       return;
     }
-    pushLog('sys', `Núcleo ${data.provider || 'desconocido'} activo (${data.model || ''})`);
+    pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms (${data.model || ''})`);
     if (data.fallbackChain && data.fallbackChain.length > 1) {
       // Si hubo fallback, registrar qué falló
       for (const step of data.fallbackChain) {
-        if (step.status === 'error') pushLog('warn', `${step.provider} falló — escalando…`);
-        else if (step.status === 'no-key') {/* no log para no saturar */}
+        if (step.status === 'error') pushLog('warn', `⚠ ${step.provider} falló — escalando…`);
       }
     }
 
@@ -1900,9 +1910,9 @@ async function jarvisReply(userText, _followUpDepth = 0) {
     const url = extractAndOpenUrl(cleaned); cleaned = url.clean;
     if (url.opened) pushLog('info', '🌐 Abriendo sitio: ' + url.opened);
     const app = extractAndOpenApp(cleaned); cleaned = app.clean;
-    if (app.launched) pushLog('info', '🚀 Intentando lanzar app: ' + app.scheme);
+    if (app.launched) pushLog('info', '🚀 Lanzando app: ' + app.scheme);
     const peerMsg = extractAndSendPeerMsg(cleaned); cleaned = peerMsg.clean;
-    if (peerMsg.sent) pushLog('info', '👥 Mensaje a pares enviado');
+    if (peerMsg.sent) pushLog('info', '👥 Mensaje a pestañas pares enviado');
 
     // [TABS:...] requiere ejecución asíncrona y posible follow-up al modelo
     const tabsRes = await extractAndExecuteTabs(cleaned);
@@ -1910,18 +1920,38 @@ async function jarvisReply(userText, _followUpDepth = 0) {
 
     addJarvisMessage(cleaned || rawReply);
 
-    // Si hubo resultado de TABS, lo enviamos como mensaje del usuario simulando
-    // contexto del sistema, para que el modelo elabore (máx. 1 follow-up).
     if (tabsRes.feedback && _followUpDepth < 1) {
-      // Pequeña pausa para que termine el typewriter antes
       setTimeout(() => {
         STATE.chatHistory.push({ role: 'user', text: tabsRes.feedback, time: nowTime() });
         jarvisReply(tabsRes.feedback, _followUpDepth + 1);
       }, 600);
     }
   } catch (e) {
-    pushLog('error', 'Red: no pude alcanzar /api/agent — ' + (e.message || e));
+    removeThinkingMessage(thinkingMsg);
+    finishThinkingLog(thinkingLog, 'fail');
+    pushLog('error', '🛑 Red: no pude alcanzar /api/agent — ' + (e.message || e));
     addJarvisMessage('Disculpe, señor. No pude alcanzar el endpoint del agente. Estoy operando sin núcleo cognitivo en este momento.');
+  }
+}
+
+/* ---------- Indicadores de "pensando" ---------- */
+function addThinkingMessage() {
+  const el = document.createElement('div');
+  el.className = 'msg jarvis thinking';
+  el.dataset.testid = 'thinking-msg';
+  el.innerHTML = `<span class="msg-pre">J.A.R.V.I.S.</span><span class="msg-text"><span class="thinking-spark">✦</span> Pensando<span class="thinking-dots"><span></span><span></span><span></span></span></span><span class="msg-time">${nowTime()}</span>`;
+  $('#chat-history').appendChild(el);
+  scrollChat();
+  return el;
+}
+function removeThinkingMessage(el) { if (el && el.parentNode) el.parentNode.removeChild(el); }
+function finishThinkingLog(row, status, elapsedMs) {
+  if (!row) return;
+  row.classList.remove('thinking-active');
+  const m = row.querySelector('.m');
+  if (m) {
+    if (status === 'ok')   m.textContent = `Razonamiento completado en ${elapsedMs}ms`;
+    else                   m.textContent = 'Razonamiento abortado';
   }
 }
 
@@ -2011,13 +2041,21 @@ function pushLog(lvOrItem, msg) {
   const item = typeof lvOrItem === 'object' ? lvOrItem : { lv: lvOrItem, m: msg };
   const wrap = $('#logs');
   const row = document.createElement('div');
-  row.className = 'log-line';
+  const lv = (item.lv || 'info').toLowerCase();
+  row.className = 'log-line lv-' + lv + (item.thinkingActive ? ' thinking-active' : '');
   const time = nowTime();
-  row.innerHTML = `<span class="t">[${time}]</span> <span class="lv-${item.lv}">[${item.lv.toUpperCase()}]</span> <span class="m"></span>`;
+  const lvLabel = lv === 'think' ? 'AI' : lv.toUpperCase();
+  row.innerHTML = `<span class="t">${time}</span><span class="lv lv-${lv}">${lvLabel}</span><span class="m"></span>`;
   row.querySelector('.m').textContent = item.m;
+  if (item.id) row.dataset.logId = item.id;
   wrap.appendChild(row);
   while (wrap.children.length > CONFIG.logs.maxLines) wrap.removeChild(wrap.firstChild);
   wrap.scrollTop = wrap.scrollHeight;
+  return row;
+}
+function removeLogById(id) {
+  const el = document.querySelector(`.log-line[data-log-id="${id}"]`);
+  if (el) el.remove();
 }
 function startLogLoop() {
   function tick() {
@@ -2108,6 +2146,15 @@ function bindEvents() {
   $('#clear-logs').addEventListener('click', () => {
     $('#logs').innerHTML = '';
     pushLog('sys', 'Registros limpiados por el operador');
+  });
+  // Clear chat
+  $('#clear-chat-btn')?.addEventListener('click', () => {
+    $('#chat-history').innerHTML = '';
+    STATE.chatHistory = [];
+    try { window.TabsBridge?.Session.patch({ chatHistory: [] }); } catch {}
+    pushLog('sys', '🧹 Chat limpiado por el operador');
+    beep(660, 0.06, 'sine', 0.04);
+    addJarvisMessage('Chat reiniciado, señor. ¿En qué puedo asistirle?');
   });
   // Connect agent
   $('#connect-btn').addEventListener('click', () => {

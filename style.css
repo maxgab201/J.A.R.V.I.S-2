@@ -411,19 +411,81 @@ input { font-family: inherit; }
    LOGS
    ============================================================ */
 .logs {
-  height: 200px; overflow-y: auto;
-  background: var(--bg-deep); border: 1px solid var(--cy-20);
-  padding: 8px;
-  display: flex; flex-direction: column; gap: 4px;
+  height: 220px; overflow-y: auto;
+  background: linear-gradient(180deg, rgba(0, 8, 20, 0.95) 0%, rgba(0, 5, 15, 0.85) 100%);
+  border: 1px solid var(--cy-20);
+  padding: 6px;
+  display: flex; flex-direction: column; gap: 1px;
   font-family: var(--f-mono); font-size: 10px;
+  scroll-behavior: smooth;
 }
-.log-line { line-height: 1.4; word-wrap: break-word; }
-.log-line .t { color: var(--cy); }
-.log-line .lv-info { color: var(--green); }
-.log-line .lv-warn { color: var(--orange); }
+.logs::-webkit-scrollbar { width: 6px; }
+.logs::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.3); }
+.logs::-webkit-scrollbar-thumb { background: var(--cy-40); border-radius: 3px; }
+.logs::-webkit-scrollbar-thumb:hover { background: var(--cy-60); }
+
+.log-line {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 6px; align-items: baseline;
+  line-height: 1.4; word-wrap: break-word;
+  padding: 3px 6px 3px 8px;
+  border-left: 2px solid transparent;
+  transition: background 0.15s;
+  animation: logSlideIn 0.25s cubic-bezier(0.2, 0.6, 0.2, 1);
+  position: relative;
+}
+.log-line:hover { background: rgba(0, 212, 255, 0.06); }
+.log-line .t {
+  color: var(--cy-60); font-size: 9.5px;
+  white-space: nowrap; letter-spacing: 0.5px;
+}
+.log-line .lv {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-weight: 600; font-size: 9.5px;
+  letter-spacing: 0.8px; white-space: nowrap;
+}
+.log-line .lv::before {
+  content: ''; display: inline-block;
+  width: 6px; height: 6px; border-radius: 50%;
+  box-shadow: 0 0 5px currentColor;
+}
+.log-line.lv-info  { border-left-color: var(--green); }
+.log-line.lv-warn  { border-left-color: var(--orange); background: rgba(255, 102, 0, 0.04); }
+.log-line.lv-error { border-left-color: var(--red); background: rgba(255, 34, 68, 0.06); }
+.log-line.lv-sys   { border-left-color: var(--cy); }
+.log-line.lv-think { border-left-color: #c084fc; background: rgba(192, 132, 252, 0.07); }
+
+.log-line .lv-info  { color: var(--green); }
+.log-line .lv-warn  { color: var(--orange); }
 .log-line .lv-error { color: var(--red); }
-.log-line .lv-sys { color: var(--cy); }
-.log-line .m { color: var(--white); }
+.log-line .lv-sys   { color: var(--cy); }
+.log-line .lv-think { color: #c084fc; }
+.log-line .m {
+  color: rgba(255, 255, 255, 0.92);
+  word-break: break-word; min-width: 0;
+}
+.log-line.lv-error .m { color: #ffd3da; }
+.log-line.lv-warn  .m { color: #ffd9b5; }
+
+@keyframes logSlideIn {
+  from { opacity: 0; transform: translateX(-6px); background: rgba(0, 212, 255, 0.18); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Animación de "pensando" en logs */
+.log-line.thinking-active .m::after {
+  content: '...';
+  display: inline-block;
+  animation: thinkingDots 1.2s steps(4, end) infinite;
+  width: 1em; text-align: left; color: #c084fc;
+}
+@keyframes thinkingDots {
+  0%, 100% { content: ''; }
+  25%      { content: '.'; }
+  50%      { content: '..'; }
+  75%      { content: '...'; }
+}
 
 .ghost-btn {
   background: transparent; border: 1px solid var(--cy-40); color: var(--cy);
@@ -619,6 +681,42 @@ input { font-family: inherit; }
   border-left: 2px solid var(--orange);
 }
 .msg.peer .msg-pre { color: var(--orange); }
+
+/* Indicador de "pensando" mientras el modelo procesa */
+.msg.thinking {
+  border-left: 2px solid #c084fc;
+  background: rgba(192, 132, 252, 0.06);
+}
+.msg.thinking .msg-pre { color: #c084fc; }
+.msg.thinking .msg-text {
+  color: #d8b9ff;
+  font-style: italic;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.thinking-dots {
+  display: inline-flex; gap: 3px;
+}
+.thinking-dots span {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #c084fc;
+  animation: thinkBounce 1.2s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(192, 132, 252, 0.7);
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.18s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes thinkBounce {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
+  40%           { opacity: 1;    transform: scale(1.15); }
+}
+.thinking-spark {
+  font-size: 11px; color: #c084fc;
+  animation: thinkSpark 2s linear infinite;
+  display: inline-block;
+}
+@keyframes thinkSpark {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.18); }
+}
 
 /* Modal de instalación de extensión */
 .ext-modal-overlay {
