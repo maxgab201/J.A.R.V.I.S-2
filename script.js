@@ -1869,13 +1869,13 @@ const STREAM_SETTINGS = {
   },
 };
 
-async function jarvisReply(userText, _followUpDepth = 0) {
+async function jarvisReply(userText, _followUpDepth = 0, _retryWithoutNvidia = false) {
   Sphere.setMode('processing');
 
-  const useStream = !!STREAM_SETTINGS.showReasoning;
+  const useStream = !!STREAM_SETTINGS.showReasoning && !_retryWithoutNvidia;
   // Indicadores: mensaje "pensando..." en el chat + log "pensando..."
   const thinkingMsg = addThinkingMessage(useStream);
-  const thinkingLog = pushLog({ lv: 'think', m: 'Pensando', thinkingActive: true, id: 'think-' + Date.now() });
+  const thinkingLog = pushLog({ lv: 'think', m: _retryWithoutNvidia ? 'Reintentando sin NVIDIA' : 'Pensando', thinkingActive: true, id: 'think-' + Date.now() });
 
   // Preparar historial (últimos 12 turnos para mantener contexto)
   const history = STATE.chatHistory
@@ -1899,16 +1899,25 @@ async function jarvisReply(userText, _followUpDepth = 0) {
         messages: history,
         systemPrompt: SYSTEM_PROMPT + '\n' + ctx,
         stream: useStream,
+        skipProviders: _retryWithoutNvidia ? ['nvidia'] : [],
       }),
     });
 
     if (!r.ok) {
       removeThinkingMessage(thinkingMsg);
       finishThinkingLog(thinkingLog, 'fail');
+      // 502/504 = timeout/gateway de Vercel — solemos resolverlo saltándonos NVIDIA
+      if ((r.status === 504 || r.status === 502) && !_retryWithoutNvidia) {
+        pushLog('warn', `⏱ ${r.status} del gateway: el razonamiento tardó demasiado. Reintentando sin NVIDIA…`);
+        return jarvisReply(userText, _followUpDepth, true);
+      }
       const err = await r.json().catch(() => ({}));
       const detail = err.error || ('HTTP ' + r.status);
       pushLog('error', '🛑 Núcleo cognitivo: ' + detail);
-      addJarvisMessage(`Disculpe, señor. La conexión con el núcleo cognitivo falló (${detail}).`);
+      const friendly = (r.status === 504 || r.status === 502)
+        ? 'Disculpe, señor. El núcleo cognitivo tardó demasiado. Estoy reintentando con un modelo más liviano.'
+        : `Disculpe, señor. La conexión con el núcleo cognitivo falló (${detail}).`;
+      addJarvisMessage(friendly);
       return;
     }
 

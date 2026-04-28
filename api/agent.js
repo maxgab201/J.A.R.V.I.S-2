@@ -25,12 +25,14 @@ const PROVIDERS = [
     model: 'nvidia/nemotron-3-super-120b-a12b',
     keyEnv: 'NVIDIA_API_KEY',
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
-    // Sobrescribe los parámetros generales para este modelo (Nemotron exige max_tokens alto)
-    gen: { temperature: 1, top_p: 0.95, max_tokens: 4096 },
-    // Parámetros extra propios de NVIDIA (modo "thinking" con reasoning budget)
+    // Sobrescribe los parámetros generales (Nemotron + thinking)
+    // Bajamos max_tokens y reasoning_budget para no excedernos del maxDuration
+    // de Vercel (60s en Hobby) y caer rápido al fallback si tarda.
+    gen: { temperature: 1, top_p: 0.95, max_tokens: 1500 },
+    // Parámetros extra propios de NVIDIA (modo "thinking")
     extraBody: {
       chat_template_kwargs: { enable_thinking: true },
-      reasoning_budget: 16384,
+      reasoning_budget: 2048,
     },
   },
   {
@@ -84,16 +86,17 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const body = await readBody(req);
-  const { messages = [], systemPrompt, stream: wantStream = false } = body || {};
+  const { messages = [], systemPrompt, stream: wantStream = false, skipProviders = [] } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages vacío o inválido' });
   }
+  const skipSet = new Set((Array.isArray(skipProviders) ? skipProviders : []).map(s => String(s).toLowerCase()));
 
   /* ============================================================
      Modo STREAMING (sólo NVIDIA por ahora) — proxy SSE al cliente
      Si falla, automáticamente caemos a modo no-streaming.
      ============================================================ */
-  if (wantStream) {
+  if (wantStream && !skipSet.has('nvidia')) {
     const nvidia = PROVIDERS.find(p => p.name === 'nvidia');
     const nvKey = nvidia && process.env[nvidia.keyEnv];
     if (nvidia && nvKey) {
@@ -107,6 +110,10 @@ export default async function handler(req, res) {
 
   const fallbackChain = [];
   for (const p of PROVIDERS) {
+    if (skipSet.has(p.name)) {
+      fallbackChain.push({ provider: p.name, status: 'skipped' });
+      continue;
+    }
     const key = process.env[p.keyEnv];
     if (!key) {
       fallbackChain.push({ provider: p.name, status: 'no-key' });
@@ -325,8 +332,10 @@ async function callOpenAI(p, key, messages, systemPrompt) {
     ...(p.extraBody || {}),
   };
 
-  // NVIDIA Nemotron tarda más que el resto cuando piensa: damos hasta 60s
-  const timeoutMs = p.name === 'nvidia' ? 60000 : 30000;
+  // NVIDIA Nemotron tarda más cuando piensa, pero limitamos a 25s para
+  // dar tiempo a que el fallback (Gemini/Mistral/etc.) complete dentro
+  // del maxDuration de Vercel (60s). Los demás proveedores: 30s.
+  const timeoutMs = p.name === 'nvidia' ? 25000 : 30000;
 
   const r = await timedFetch(p.endpoint, {
     method: 'POST',
