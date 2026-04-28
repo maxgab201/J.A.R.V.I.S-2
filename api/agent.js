@@ -26,14 +26,14 @@ const PROVIDERS = [
     keyEnv: 'NVIDIA_API_KEY',
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
     // Sobrescribe los parámetros generales (Nemotron + thinking)
-    // Bajamos max_tokens y reasoning_budget para no excedernos del maxDuration
-    // de Vercel (60s en Hobby) y caer rápido al fallback si tarda.
+    // El reasoning_budget y enable_thinking se ajustan DINÁMICAMENTE por
+    // mensaje (ver applyAdaptiveReasoning) — estos son sólo defaults.
     gen: { temperature: 1, top_p: 0.95, max_tokens: 1500 },
-    // Parámetros extra propios de NVIDIA (modo "thinking")
     extraBody: {
       chat_template_kwargs: { enable_thinking: true },
-      reasoning_budget: 2048,
+      reasoning_budget: 1500,
     },
+    adaptiveReasoning: true, // ← marca para activar la heurística
   },
   {
     name: 'gemini-1',
@@ -76,6 +76,66 @@ const PROVIDERS = [
 
 const COMMON_GEN = { temperature: 0.75, max_tokens: 600, top_p: 0.95 };
 
+/* ============================================================
+   HEURÍSTICA DE RAZONAMIENTO ADAPTATIVO (sólo para NVIDIA)
+   ────────────────────────────────────────────────────────────
+   Decide en el server si vale la pena que Nemotron piense, y cuánto:
+     OFF    → saludos, comandos directos triviales (sin thinking)
+     LOW    → preguntas cortas, factual (~512 tokens de razonamiento)
+     MEDIUM → conversación normal (~1500 tokens)  ← default
+     HIGH   → problemas complejos, código, análisis (~4096 tokens)
+   ============================================================ */
+function detectReasoningLevel(messages) {
+  // tomamos el último mensaje del usuario
+  const last = [...messages].reverse().find(m => {
+    const r = m && m.role;
+    return !r || r === 'user';
+  });
+  const text = (last && last.text || '').trim();
+  const len = text.length;
+  const lower = text.toLowerCase();
+
+  // OFF — saludos, agradecimientos, monosílabos
+  const offMarkers = /^(hola|holi|holaa+|buenas|buen[oa]s? d[ií]as?|buen[oa]s? tardes|buen[oa]s? noches|buen d[ií]a|qu[eé] tal|c[oó]mo (estás|andas|va)|todo (bien|tranqui)|gracias|grax|ok|dale|listo|s[ií]|no|chau|adi[oó]s|nos vemos|hi|hello|hey|thanks)[\s\.\!\?]*$/i;
+  if (offMarkers.test(text)) return { level: 'off', enable_thinking: false, reasoning_budget: 0 };
+
+  // OFF — comandos directos del HUD: abrir url/app, listar/cerrar pestañas, mic
+  // Usamos (?=\s|$|\W) en vez de \b porque la ñ y vocales acentuadas no son
+  // word-chars en regex JS y \b no las trata como límite correcto.
+  const directCmd = /^(abr[ií]|abrime|ir a|llev[aá]me|navegá|navegar|list[aá]|cerr[aá]|cambi[aá] a|activ[aá]|reproduc[ií]|paus[aá]|sub[ií] el volumen|baj[aá] el volumen|silenci[aá]|reload|recarg[aá]|mostr[aá]me|escuch[aá]|mut[eé])(?=\s|$|\W)/i;
+  if (directCmd.test(text) && len < 80) return { level: 'off', enable_thinking: false, reasoning_budget: 0 };
+
+  // LOW — mensajes muy cortos
+  if (len < 30) return { level: 'low', enable_thinking: true, reasoning_budget: 512 };
+
+  // HIGH — markers de razonamiento profundo
+  const highMarkers = /\b(explic[aá]me?|explicá|por qu[eé]|comparár|comparar|comparame|análisis|analiz[aá]|calcul[aá]|resolv[eé]|estrategi[ao]|planificá|plan de|diseñ[aá]|c[oó]digo|programá|escribime un c[oó]digo|c[oó]mo (funciona|hago|implemento)|paso a paso|step by step|optimiz[aá]|debug|debug[ueé]a|raz[oó]ná|justific[aá]|demostr[aá]|prueb[aá]|why does|explain (how|why)|step\-by\-step)\b/i;
+  if (highMarkers.test(lower)) return { level: 'high', enable_thinking: true, reasoning_budget: 4096 };
+
+  // HIGH — operaciones matemáticas con varios pasos o textos largos
+  const mathCount = (text.match(/[\+\-\*\/\=]/g) || []).length;
+  if (mathCount >= 3 || len > 280) return { level: 'high', enable_thinking: true, reasoning_budget: 4096 };
+
+  // MEDIUM — default (conversación común, una pregunta)
+  return { level: 'medium', enable_thinking: true, reasoning_budget: 1500 };
+}
+
+/** Aplica la heurística a las opciones del proveedor (clona body) */
+function applyAdaptiveReasoning(p, messages, body) {
+  if (!p.adaptiveReasoning) return body;
+  const dec = detectReasoningLevel(messages);
+  // Mutamos chat_template_kwargs y reasoning_budget en el body
+  body.chat_template_kwargs = { ...(body.chat_template_kwargs || {}), enable_thinking: dec.enable_thinking };
+  if (dec.enable_thinking) {
+    body.reasoning_budget = dec.reasoning_budget;
+  } else {
+    delete body.reasoning_budget;
+  }
+  // Devolvemos también el nivel para loguear (no se manda al modelo)
+  body.__reasoning_level = dec.level;
+  return body;
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -91,6 +151,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'messages vacío o inválido' });
   }
   const skipSet = new Set((Array.isArray(skipProviders) ? skipProviders : []).map(s => String(s).toLowerCase()));
+  // Heurística de razonamiento adaptativo (la usamos para devolver `reasoningLevel`
+  // al cliente y para skippear NVIDIA si el level es 'off' y un proveedor más rápido
+  // está disponible).
+  const nvidiaLevel = detectReasoningLevel(messages);
 
   /* ============================================================
      Modo STREAMING (sólo NVIDIA por ahora) — proxy SSE al cliente
@@ -129,6 +193,7 @@ export default async function handler(req, res) {
           provider: p.name,
           model: p.model,
           fallbackChain,
+          reasoningLevel: p.adaptiveReasoning ? nvidiaLevel.level : null,
         });
       }
       fallbackChain.push({ provider: p.name, status: 'empty' });
@@ -168,6 +233,10 @@ async function streamProxyOpenAI(p, key, messages, systemPrompt, res) {
     stream: true,
     ...(p.extraBody || {}),
   };
+  // Aplica heurística adaptativa de razonamiento (sólo NVIDIA)
+  applyAdaptiveReasoning(p, messages, body);
+  const reasoningLevel = body.__reasoning_level;
+  delete body.__reasoning_level;
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 90000);
@@ -202,7 +271,7 @@ async function streamProxyOpenAI(p, key, messages, systemPrompt, res) {
   res.flushHeaders?.();
 
   // Evento inicial con metadata de provider
-  res.write(`event: meta\ndata: ${JSON.stringify({ provider: p.name, model: p.model })}\n\n`);
+  res.write(`event: meta\ndata: ${JSON.stringify({ provider: p.name, model: p.model, reasoningLevel })}\n\n`);
 
   // Reenvío del stream upstream → cliente, parseando los chunks SSE
   const reader = upstream.body.getReader();
@@ -331,6 +400,10 @@ async function callOpenAI(p, key, messages, systemPrompt) {
     stream: false,
     ...(p.extraBody || {}),
   };
+  // Aplica heurística adaptativa de razonamiento (sólo NVIDIA)
+  applyAdaptiveReasoning(p, messages, body);
+  const reasoningLevel = body.__reasoning_level;
+  delete body.__reasoning_level;
 
   // NVIDIA Nemotron tarda más cuando piensa, pero limitamos a 25s para
   // dar tiempo a que el fallback (Gemini/Mistral/etc.) complete dentro

@@ -1974,7 +1974,8 @@ async function consumeJsonResponse(r, thinkingMsg, thinkingLog, t0) {
     addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
     return null;
   }
-  pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms (${data.model || ''})`);
+  const lvlBadge = data.reasoningLevel ? ` · razonamiento ${data.reasoningLevel.toUpperCase()}` : '';
+  pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms${lvlBadge}`);
   if (data.fallbackChain && data.fallbackChain.length > 1) {
     for (const step of data.fallbackChain) {
       if (step.status === 'error') pushLog('warn', `⚠ ${step.provider} falló — escalando…`);
@@ -1992,6 +1993,7 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   let aggregateReasoning = '';
   let provider = '?';
   let model = '';
+  let reasoningLevel = null;
   const thinkLogM = thinkingLog ? thinkingLog.querySelector('.m') : null;
 
   // Sólo actualizamos el LOG con un snippet del razonamiento (no el chat).
@@ -2023,7 +2025,11 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
         if (evtName === 'meta') {
           provider = payload.provider || provider;
           model = payload.model || model;
-          if (thinkLogM) thinkLogM.textContent = `Pensando con ${provider}…`;
+          reasoningLevel = payload.reasoningLevel || null;
+          if (thinkLogM) {
+            const lbl = reasoningLevel ? ` (${reasoningLevel.toUpperCase()})` : '';
+            thinkLogM.textContent = `Pensando con ${provider}${lbl}…`;
+          }
         } else if (evtName === 'reasoning') {
           aggregateReasoning += payload.d || '';
           flushReasoningLog(aggregateReasoning);
@@ -2045,7 +2051,7 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   removeThinkingMessage(thinkingMsg);
   finishThinkingLog(thinkingLog, 'ok', elapsedMs);
 
-  pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${aggregateReasoning ? ' (razonamiento: '+aggregateReasoning.length+' chars)' : ''}`);
+  pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${reasoningLevel ? ' · razonamiento '+reasoningLevel.toUpperCase() : ''}${aggregateReasoning ? ' ('+aggregateReasoning.length+' chars)' : ''}`);
 
   // Limpiamos cualquier <think>...</think> que se haya filtrado al content
   // (defensivo: NVIDIA usa reasoning_content separado, pero algunos modelos
