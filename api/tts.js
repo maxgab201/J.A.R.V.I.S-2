@@ -27,62 +27,60 @@ export default async function handler(req, res) {
   }
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY no configurada' });
+  // Probamos las 2 keys de Gemini (la de TTS necesita preview-tts, sólo Gemini lo hace gratis)
+  const keys = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2].filter(Boolean);
+  if (!keys.length) return res.status(500).json({ error: 'GEMINI_API_KEY no configurada' });
 
   const body = await readBody(req);
   const { text, voice = DEFAULT_VOICE, style = DEFAULT_STYLE } = body || {};
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text requerido' });
   if (text.length > 4000) return res.status(400).json({ error: 'text demasiado largo (>4000 chars)' });
 
-  // Inyectar instrucción de estilo al inicio del texto (Gemini TTS responde a directrices en el prompt)
   const promptText = `${style}\n\n${text}`;
-
   const payload = {
     contents: [{ parts: [{ text: promptText }] }],
     generationConfig: {
       responseModalities: ['AUDIO'],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: voice },
-        },
-      },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
     },
   };
 
-  try {
-    const r = await fetch(`${ENDPOINT}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) {
-      const errTxt = await r.text();
-      return res.status(r.status).json({ error: 'Gemini TTS error', status: r.status, details: errTxt.slice(0, 600) });
-    }
-    const data = await r.json();
-    const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-    if (!part || !part.inlineData?.data) {
-      return res.status(502).json({
-        error: 'TTS no devolvió audio',
-        finishReason: data?.candidates?.[0]?.finishReason || 'unknown',
+  const errs = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    try {
+      const r = await fetch(`${ENDPOINT}?key=${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        errs.push(`key#${i+1}: HTTP ${r.status} ${t.slice(0, 120)}`);
+        continue;
+      }
+      const data = await r.json();
+      const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (!part?.inlineData?.data) {
+        errs.push(`key#${i+1}: sin audio (${data?.candidates?.[0]?.finishReason || 'unknown'})`);
+        continue;
+      }
+      const mimeType = part.inlineData.mimeType || 'audio/L16;codec=pcm;rate=24000';
+      const sampleRate = parseSampleRate(mimeType);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({
+        audioBase64: part.inlineData.data,
+        mimeType,
+        sampleRate,
+        voice,
+        model: MODEL,
+        keyIdx: i + 1,
+      });
+    } catch (e) {
+      errs.push(`key#${i+1}: ${String(e.message || e).slice(0, 120)}`);
     }
-    // mimeType ejemplo: "audio/L16;codec=pcm;rate=24000"
-    const mimeType = part.inlineData.mimeType || 'audio/L16;codec=pcm;rate=24000';
-    const sampleRate = parseSampleRate(mimeType);
-
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json({
-      audioBase64: part.inlineData.data,
-      mimeType,
-      sampleRate,
-      voice,
-      model: MODEL,
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'Error de red en TTS', message: String(e?.message || e) });
   }
+  return res.status(503).json({ error: 'TTS falló en todas las keys', tried: errs });
 }
 
 function parseSampleRate(mime) {

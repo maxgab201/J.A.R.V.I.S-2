@@ -1556,7 +1556,14 @@ async function jarvisReply(userText) {
       addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
       return;
     }
-    pushLog('sys', 'Agente respondió en ' + (data.model || 'gemini'));
+    pushLog('sys', `Núcleo ${data.provider || 'desconocido'} activo (${data.model || ''})`);
+    if (data.fallbackChain && data.fallbackChain.length > 1) {
+      // Si hubo fallback, registrar qué falló
+      for (const step of data.fallbackChain) {
+        if (step.status === 'error') pushLog('warn', `${step.provider} falló — escalando…`);
+        else if (step.status === 'no-key') {/* no log para no saturar */}
+      }
+    }
 
     // Detectar y ejecutar [ABRIR:url] o [APP:scheme] antes de mostrar/leer
     let cleaned = rawReply;

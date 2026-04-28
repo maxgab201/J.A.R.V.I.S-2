@@ -28,8 +28,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const keys = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2].filter(Boolean);
+  if (!keys.length) {
     return res.status(500).json({ error: 'GEMINI_API_KEY no configurada' });
   }
 
@@ -53,24 +53,29 @@ export default async function handler(req, res) {
     },
   };
 
-  try {
-    const r = await fetch(`${ENDPOINT}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) {
-      const errTxt = await r.text();
-      return res.status(r.status).json({ error: 'Gemini API error', status: r.status, details: errTxt.slice(0, 500) });
+  const errs = [];
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const r = await fetch(`${ENDPOINT}?key=${keys[i]}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        errs.push(`key#${i+1}: HTTP ${r.status} ${txt.slice(0, 100)}`);
+        continue;
+      }
+      const data = await r.json();
+      let text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || '';
+      if (text === '-' || !text) text = '';
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({ text, model: MODEL, keyIdx: i + 1 });
+    } catch (e) {
+      errs.push(`key#${i+1}: ${String(e.message || e).slice(0, 100)}`);
     }
-    const data = await r.json();
-    let text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || '';
-    if (text === '-' || !text) text = '';
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json({ text, model: MODEL });
-  } catch (e) {
-    return res.status(500).json({ error: 'Error de red', message: String(e?.message || e) });
   }
+  return res.status(503).json({ error: 'Transcripción falló en todas las keys', tried: errs });
 }
 
 async function readBody(req) {
