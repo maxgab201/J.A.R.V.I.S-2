@@ -1874,7 +1874,7 @@ async function jarvisReply(userText, _followUpDepth = 0, _retryWithoutNvidia = f
 
   const useStream = !!STREAM_SETTINGS.showReasoning && !_retryWithoutNvidia;
   // Indicadores: mensaje "pensando..." en el chat + log "pensando..."
-  const thinkingMsg = addThinkingMessage(useStream);
+  const thinkingMsg = addThinkingMessage();
   const thinkingLog = pushLog({ lv: 'think', m: _retryWithoutNvidia ? 'Reintentando sin NVIDIA' : 'Pensando', thinkingActive: true, id: 'think-' + Date.now() });
 
   // Preparar historial (últimos 12 turnos para mantener contexto)
@@ -1992,26 +1992,20 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   let aggregateReasoning = '';
   let provider = '?';
   let model = '';
-  const reasoningBox = thinkingMsg ? ensureReasoningBox(thinkingMsg) : null;
   const thinkLogM = thinkingLog ? thinkingLog.querySelector('.m') : null;
 
-  const flushReasoning = throttle((text) => {
-    if (reasoningBox) {
-      reasoningBox.textContent = text;
-      reasoningBox.scrollTop = reasoningBox.scrollHeight;
-    }
+  // Sólo actualizamos el LOG con un snippet del razonamiento (no el chat).
+  const flushReasoningLog = throttle((text) => {
     if (thinkLogM) {
-      // tomamos solo las últimas ~80 chars para el log
       thinkLogM.textContent = 'Pensando: ' + text.slice(-80).replace(/\s+/g, ' ');
     }
-  }, 80);
+  }, 120);
 
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
-      // Parsear SSE: eventos separados por \n\n, líneas dentro como event: y data:
       let sep;
       while ((sep = buf.indexOf('\n\n')) >= 0) {
         const block = buf.slice(0, sep);
@@ -2032,7 +2026,7 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
           if (thinkLogM) thinkLogM.textContent = `Pensando con ${provider}…`;
         } else if (evtName === 'reasoning') {
           aggregateReasoning += payload.d || '';
-          flushReasoning(aggregateReasoning);
+          flushReasoningLog(aggregateReasoning);
         } else if (evtName === 'token') {
           aggregateContent += payload.d || '';
         } else if (evtName === 'done') {
@@ -2047,59 +2041,45 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   }
 
   const elapsedMs = Math.round(performance.now() - t0);
-  // Marcar caja de razonamiento como "done" (oculta el caret) y desuscribir log
-  if (reasoningBox) reasoningBox.classList.add('done');
-  if (reasoningBox && aggregateReasoning) {
-    reasoningBox.textContent = aggregateReasoning;
-    reasoningBox.scrollTop = reasoningBox.scrollHeight;
-  }
   // Reemplazar el mensaje thinking-msg por la respuesta final
   removeThinkingMessage(thinkingMsg);
   finishThinkingLog(thinkingLog, 'ok', elapsedMs);
 
   pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${aggregateReasoning ? ' (razonamiento: '+aggregateReasoning.length+' chars)' : ''}`);
 
-  const reply = aggregateContent.trim() || aggregateReasoning.trim();
+  // Limpiamos cualquier <think>...</think> que se haya filtrado al content
+  // (defensivo: NVIDIA usa reasoning_content separado, pero algunos modelos
+  // OpenAI-compatibles emiten thinking dentro del content).
+  let reply = aggregateContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (!reply) {
-    addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta.');
+    addJarvisMessage('Disculpe, señor. El modelo no devolvió respuesta final. Intente de nuevo o desactive RAZONAMIENTO.');
     return null;
   }
   return { reply, provider, model, reasoning: aggregateReasoning.trim() };
 }
 
-function ensureReasoningBox(thinkingMsg) {
-  if (!thinkingMsg) return null;
-  let box = thinkingMsg.querySelector('.reasoning-stream');
-  if (!box) {
-    box = document.createElement('div');
-    box.className = 'reasoning-stream';
-    box.dataset.testid = 'reasoning-stream';
-    thinkingMsg.appendChild(box);
-  }
-  return box;
-}
-
+/* throttle simple para updates de UI */
 function throttle(fn, ms) {
   let pending = null;
-  let lastCall = 0;
+  let scheduled = false;
   return (arg) => {
     pending = arg;
-    const now = Date.now();
-    const wait = Math.max(0, ms - (now - lastCall));
+    if (scheduled) return;
+    scheduled = true;
     setTimeout(() => {
-      if (pending !== null) { lastCall = Date.now(); fn(pending); pending = null; }
-    }, wait);
+      scheduled = false;
+      if (pending !== null) { fn(pending); pending = null; }
+    }, ms);
   };
 }
 
 /* ---------- Indicadores de "pensando" ---------- */
-function addThinkingMessage(withReasoning) {
+function addThinkingMessage() {
   const el = document.createElement('div');
   el.className = 'msg jarvis thinking';
   el.dataset.testid = 'thinking-msg';
   el.innerHTML = `<span class="msg-pre">J.A.R.V.I.S.</span><span class="msg-text"><span class="thinking-spark">✦</span> Pensando<span class="thinking-dots"><span></span><span></span><span></span></span></span><span class="msg-time">${nowTime()}</span>`;
   $('#chat-history').appendChild(el);
-  if (withReasoning) ensureReasoningBox(el);
   scrollChat();
   return el;
 }
