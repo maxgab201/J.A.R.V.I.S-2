@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="J.A.R.V.I.S. Mark VII Interface — HUD holográfico estilo Iron Man" />
+  <title>J.A.R.V.I.S. — Mark VII Interface</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ==== BACKGROUND PARTICLES (full screen) ==== -->
+  <canvas id="bg-particles" aria-hidden="true"></canvas>
+
+  <!-- ==== SCANLINES OVERLAY ==== -->
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <!-- ==== BOOT SEQUENCE ==== -->
+  <div id="boot-screen">
+    <div class="boot-inner">
+      <div class="boot-title" id="boot-title"></div>
+      <div class="boot-cursor">_</div>
+      <div class="boot-bars" id="boot-bars"></div>
+    </div>
+  </div>
+
+  <!-- ==== APP ==== -->
+  <div id="app" class="hidden" aria-hidden="true">
+
+    <!-- HEADER -->
+    <header class="hud-header" data-testid="hud-header">
+      <div class="header-left">
+        <div class="arc-reactor" aria-hidden="true">
+          <div class="arc-ring outer"></div>
+          <div class="arc-ring inner"></div>
+          <div class="arc-core"></div>
+        </div>
+        <div class="brand">
+          <div class="brand-name glitch" data-text="J.A.R.V.I.S.">J.A.R.V.I.S.</div>
+          <div class="brand-sub">MARK VII INTERFACE v2.1</div>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="status-pill"><span class="dot dot-green"></span><span class="pill-label">SISTEMA</span><span class="pill-val">OPERATIVO</span></div>
+        <div class="status-pill"><span class="dot dot-orange"></span><span class="pill-label">CONEXIÓN</span><span class="pill-val">LOCAL</span></div>
+        <div class="status-pill"><span class="dot dot-cyan"></span><span class="pill-label">SEGURIDAD</span><span class="pill-val">ACTIVA</span></div>
+      </div>
+
+      <div class="header-right">
+        <div class="time-block">
+          <div class="clock" id="clock" data-testid="clock">--:--:--</div>
+          <div class="date" id="date">--- -- --- ----</div>
+        </div>
+        <button class="settings-btn" id="settings-btn" data-testid="settings-btn" aria-label="Configuración">&#9881;</button>
+      </div>
+    </header>
+
+    <!-- MOBILE TOGGLES -->
+    <button class="mobile-toggle" data-target="left-sidebar" data-testid="toggle-left">&#9660; RECURSOS DEL SISTEMA</button>
+
+    <!-- MAIN GRID -->
+    <main class="hud-main">
+
+      <!-- LEFT SIDEBAR -->
+      <aside class="sidebar left" id="left-sidebar">
+
+        <!-- CPU -->
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">PROCESADOR</span><span class="hr"></span></div>
+          <div class="cpu-gauge-wrap">
+            <svg class="cpu-gauge" viewBox="0 0 120 120" width="120" height="120">
+              <circle cx="60" cy="60" r="52" class="gauge-bg" />
+              <circle cx="60" cy="60" r="52" class="gauge-fg" id="cpu-arc" />
+            </svg>
+            <div class="cpu-text">
+              <div class="cpu-pct" id="cpu-pct">0%</div>
+              <div class="cpu-lbl">CPU</div>
+            </div>
+          </div>
+          <div class="cores" id="cpu-cores"></div>
+        </div>
+
+        <!-- RAM -->
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">MEMORIA RAM</span><span class="hr"></span></div>
+          <div class="ram-bar"><div class="ram-fill" id="ram-fill"><div class="shimmer"></div></div></div>
+          <div class="ram-text" id="ram-text">0.0 GB / 32 GB USADOS</div>
+          <div class="ram-grid">
+            <div><span class="k">DISPONIBLE</span><span class="v" id="ram-avail">--</span></div>
+            <div><span class="k">CACHÉ</span><span class="v" id="ram-cache">--</span></div>
+            <div><span class="k">SWAP</span><span class="v" id="ram-swap">--</span></div>
+          </div>
+        </div>
+
+        <!-- NETWORK -->
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">RED / NETWORK</span><span class="hr"></span></div>
+          <canvas id="net-canvas" width="248" height="80"></canvas>
+          <div class="net-legend">
+            <span class="dl">&#8595; DL: <b id="net-dl">0.0</b> Mbps</span>
+            <span class="ul">&#8593; UL: <b id="net-ul">0.0</b> Mbps</span>
+          </div>
+        </div>
+
+        <!-- STORAGE -->
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">ALMACENAMIENTO</span><span class="hr"></span></div>
+          <div class="disk-row"><span class="disk-ico">&#9673;</span><div class="disk-info"><div class="disk-name" id="disk-c-name">CACHÉ NAVEGADOR</div><div class="disk-bar"><div class="disk-fill" id="disk-c"></div></div></div><span class="disk-pct" id="disk-c-pct">--</span></div>
+          <div class="disk-row"><span class="disk-ico">&#9673;</span><div class="disk-info"><div class="disk-name" id="disk-d-name">HEAP JS</div><div class="disk-bar"><div class="disk-fill" id="disk-d"></div></div></div><span class="disk-pct" id="disk-d-pct">--</span></div>
+        </div>
+
+        <!-- TELEMETRY (real device data) -->
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">TELEMETRÍA</span><span class="hr"></span></div>
+          <div class="temp-row"><span class="temp-ico">&#9889;</span><span class="temp-lbl">CPU</span><div class="temp-bar"><div class="temp-fill" id="temp-cpu"></div></div><span class="temp-val" id="temp-cpu-val">--%</span></div>
+          <div class="temp-row"><span class="temp-ico" id="bat-ico">&#9211;</span><span class="temp-lbl">BAT</span><div class="temp-bar"><div class="temp-fill" id="temp-gpu"></div></div><span class="temp-val" id="temp-gpu-val">--%</span></div>
+          <div class="temp-row"><span class="temp-ico">&#127760;</span><span class="temp-lbl">RED</span><div class="temp-bar"><div class="temp-fill" id="temp-mb"></div></div><span class="temp-val" id="temp-mb-val">--ms</span></div>
+          <div class="device-info" id="device-info"></div>
+        </div>
+      </aside>
+
+      <!-- CENTER -->
+      <section class="center">
+        <div class="panel chat-panel">
+          <div class="panel-header chat-header">
+            <span class="panel-title">INTERFAZ DE COMUNICACIÓN</span>
+            <span class="agent-state" id="agent-state"><span class="dot dot-green"></span> EN LÍNEA</span>
+          </div>
+          <div class="sphere-wrap">
+            <canvas id="sphere-canvas" width="200" height="200"></canvas>
+            <div class="sphere-status" id="sphere-status">LISTO PARA ASISTIR</div>
+          </div>
+          <div class="chat-history" id="chat-history" data-testid="chat-history"></div>
+          <div class="chat-input-row">
+            <button class="mic-btn" id="mic-btn" data-testid="mic-btn" aria-label="Micrófono">&#127908;</button>
+            <input type="text" id="chat-input" data-testid="chat-input" placeholder="Ingresá tu comando..." autocomplete="off" />
+            <button class="send-btn" id="send-btn" data-testid="send-btn">ENVIAR</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- MOBILE TOGGLE RIGHT -->
+      <button class="mobile-toggle right-toggle" data-target="right-sidebar" data-testid="toggle-right">&#9660; LOGS &amp; CONTROLES</button>
+
+      <!-- RIGHT SIDEBAR -->
+      <aside class="sidebar right" id="right-sidebar">
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">REGISTROS DEL SISTEMA</span><button class="ghost-btn" id="clear-logs" data-testid="clear-logs">LIMPIAR LOGS</button></div>
+          <div class="logs" id="logs" data-testid="logs"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">HISTORIAL DE COMANDOS</span><span class="hr"></span></div>
+          <div class="cmd-history" id="cmd-history" data-testid="cmd-history"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">COMANDOS RÁPIDOS</span><span class="hr"></span></div>
+          <div class="quick-grid" id="quick-grid"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">RADAR DE ACTIVIDAD</span><span class="hr"></span></div>
+          <div class="radar-wrap"><canvas id="radar-canvas" width="160" height="160"></canvas></div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="hud-footer">
+      <div class="foot-left"><span class="dot dot-green"></span> PROTOCOLO DE SEGURIDAD: ACTIVO</div>
+      <div class="foot-center">
+        <span class="foot-lbl">CARGA DEL SISTEMA</span>
+        <div class="load-bar"><div class="load-fill" id="load-fill"></div></div>
+        <span class="foot-pct" id="load-pct">0%</span>
+      </div>
+      <div class="foot-right">
+        <span id="agent-status" class="agent-off">AGENTE LOCAL: DESCONECTADO</span>
+        <button class="ghost-btn" id="connect-btn" data-testid="connect-btn">CONECTAR</button>
+      </div>
+    </footer>
+  </div>
+
+  <script defer src="system-profile.js"></script>
+  <script defer src="script.js"></script>
+</body>
+</html>

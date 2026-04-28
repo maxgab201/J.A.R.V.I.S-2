@@ -1,0 +1,35 @@
+# Environment / credenciales (NUNCA commitear)
+.env
+.env.*
+*.env.local
+.credentials
+*.pem
+*.key
+credentials.json
+
+# Memoria interna del agente (contiene credenciales de prueba)
+memory/
+
+# Plataforma de desarrollo
+.emergent/
+
+# Dependencias
+node_modules/
+yarn-error.log
+
+# Vercel
+.vercel/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log

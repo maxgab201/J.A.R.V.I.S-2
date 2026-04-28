@@ -1,0 +1,12 @@
+{
+  "name": "jarvis-mark-vii",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "dev": "node dev-server.js",
+    "start": "node dev-server.js"
+  },
+  "description": "JARVIS Mark VII Interface — HUD Iron Man (vanilla) + Vercel Serverless Functions con Gemini"
+}
