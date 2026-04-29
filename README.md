@@ -10,8 +10,9 @@ HUD holográfico estilo Iron Man — vanilla HTML/CSS/JS + Vercel Serverless Fun
 
 ### IA y voz
 - **Chat real con cadena de fallback**: NVIDIA Nemotron-3-Super-120B → Gemini → Mistral → OpenRouter (Llama 3.3) → Hugging Face.
-- **TTS** vía Gemini 2.5 Flash Preview TTS (voz neural Charon) + fallback Web Speech API.
+- **TTS con cadena de fallback**: NVIDIA Magpie TTS Multilingual (gRPC, voz `Diego` ES-US) → Gemini 2.5 Flash Preview TTS (voz neural Charon) → Web Speech API nativa.
 - **STT** vía MediaRecorder + Gemini transcription (funciona en Brave, donde `webkitSpeechRecognition` está bloqueado).
+- **Razonamiento adaptativo**: heurística automática que decide cuánto pensar según la complejidad del mensaje (OFF / LOW / MEDIUM / HIGH).
 
 ### NUEVO — Interacción con otras pestañas
 
@@ -80,6 +81,8 @@ OPENROUTER_API_KEY=...
 HUGGINGFACE_API_KEY=...
 GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts   # opcional
 GEMINI_TTS_VOICE=Charon                         # opcional
+NVIDIA_TTS_VOICE=Magpie-Multilingual.ES-US.Diego # opcional
+NVIDIA_TTS_LANGUAGE=es-US                       # opcional
 ```
 
 ## Desarrollo local

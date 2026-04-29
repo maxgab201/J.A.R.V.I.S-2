@@ -233,6 +233,9 @@ const TTS = (() => {
         let data;
         try {
           data = await fetchTTS(chunks[i]);
+          if (i === 0 && data.provider) {
+            pushLog('sys', `🎙 TTS: ${data.provider} (${data.model || ''}) ${data.fallbackChain && data.fallbackChain.length > 1 ? '· con fallback' : ''}`);
+          }
         } catch (e) {
           geminiFails++;
           // Si es rate limit (429), esperamos y reintentamos UNA vez
@@ -244,8 +247,8 @@ const TTS = (() => {
           if (!data) {
             if (geminiFails >= 2) {
               geminiOk = false;
-              pushLog('warn', 'TTS Gemini en pausa por rate-limit, usando voz nativa');
-              setTimeout(() => { geminiOk = true; geminiFails = 0; pushLog('sys', 'TTS Gemini reactivado'); }, 60000);
+              pushLog('warn', 'TTS en pausa (NVIDIA+Gemini fallaron), usando voz nativa');
+              setTimeout(() => { geminiOk = true; geminiFails = 0; pushLog('sys', 'TTS reactivado'); }, 60000);
             }
             speakSynthFallback(chunks.slice(i).join(' '));
             return;

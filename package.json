@@ -3,10 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "node dev-server.js",
     "start": "node dev-server.js"
   },
-  "description": "JARVIS Mark VII Interface — HUD Iron Man (vanilla) + Vercel Serverless Functions con Gemini"
+  "description": "JARVIS Mark VII Interface — HUD Iron Man (vanilla) + Vercel Serverless Functions con Gemini",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0"
+  }
 }
