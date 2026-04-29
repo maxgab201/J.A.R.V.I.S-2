@@ -106,12 +106,18 @@ async function geminiSynthesize({ text, voice, style }) {
   const keys = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2].filter(Boolean);
   if (!keys.length) throw new Error('GEMINI_API_KEY no configurada');
 
+  // Si la voz pedida es de la familia NVIDIA/Magpie/Riva (ej: vino del
+  // primer intento NVIDIA y ahora caemos al fallback Gemini), descartamos
+  // ese nombre y usamos el default Gemini — sino daría error de "voz inválida".
+  const isNvidiaVoice = typeof voice === 'string' && /^(Magpie-|English-US\.|Spanish-US\.|Riva)/i.test(voice);
+  const finalVoice = (!isNvidiaVoice && voice) ? voice : GEMINI_DEFAULT_VOICE;
+
   const promptText = `${style || GEMINI_DEFAULT_STYLE}\n\n${text}`;
   const payload = {
     contents: [{ parts: [{ text: promptText }] }],
     generationConfig: {
       responseModalities: ['AUDIO'],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || GEMINI_DEFAULT_VOICE } } },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: finalVoice } } },
     },
   };
 
@@ -140,7 +146,7 @@ async function geminiSynthesize({ text, voice, style }) {
         audioBase64: part.inlineData.data,
         mimeType,
         sampleRate,
-        voice: voice || GEMINI_DEFAULT_VOICE,
+        voice: finalVoice,
         model: GEMINI_MODEL,
         provider: 'gemini',
         keyIdx: i + 1,

@@ -151,9 +151,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'messages vacío o inválido' });
   }
   const skipSet = new Set((Array.isArray(skipProviders) ? skipProviders : []).map(s => String(s).toLowerCase()));
-  // Heurística de razonamiento adaptativo (la usamos para devolver `reasoningLevel`
-  // al cliente y para skippear NVIDIA si el level es 'off' y un proveedor más rápido
-  // está disponible).
+  // Calculamos el nivel de razonamiento UNA sola vez (depende sólo del último
+  // mensaje del usuario, no del proveedor). Lo devolvemos al cliente para que
+  // pueda mostrarlo en el log y, en el modo streaming, lo emitimos en el
+  // evento `meta`.
   const nvidiaLevel = detectReasoningLevel(messages);
 
   /* ============================================================
@@ -402,8 +403,7 @@ async function callOpenAI(p, key, messages, systemPrompt) {
   };
   // Aplica heurística adaptativa de razonamiento (sólo NVIDIA)
   applyAdaptiveReasoning(p, messages, body);
-  const reasoningLevel = body.__reasoning_level;
-  delete body.__reasoning_level;
+  delete body.__reasoning_level; // marker interno, no debe ir al endpoint
 
   // NVIDIA Nemotron tarda más cuando piensa, pero limitamos a 25s para
   // dar tiempo a que el fallback (Gemini/Mistral/etc.) complete dentro

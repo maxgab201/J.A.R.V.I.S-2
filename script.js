@@ -93,18 +93,21 @@ function bootChord() {
 }
 
 /* ============================================================
-   3.b TTS — Gemini 2.5 Flash Preview TTS (voz neural sofisticada)
-   Fallback: Web Speech API forzando español latinoamericano.
+   3.b TTS — NVIDIA Magpie (primario) → Gemini 2.5 (fallback) → Web Speech (último recurso)
+   El backend /api/tts maneja la cadena NVIDIA→Gemini internamente.
+   Si AMBOS fallan, este cliente cae a Web Speech API forzando español
+   latinoamericano. Tras 2 fallos seguidos, se desactiva el TTS por la nube
+   durante 60s para evitar latencia inútil.
    ============================================================ */
 const TTS = (() => {
   let enabled = true;
-  let voice = 'Charon';                 // voz default JARVIS-like
+  let voice = 'Charon';                 // voz default JARVIS-like (la entiende NVIDIA y Gemini)
   let queue = [];                        // cola de AudioBufferSourceNode
   let playing = null;
   let nextStartAt = 0;
   let synthVoice = null;                 // fallback Web Speech
-  let geminiOk = true;                   // si falla 2 veces, switch a fallback
-  let geminiFails = 0;
+  let cloudTtsOk = true;                 // si falla 2 veces, switch a Web Speech
+  let cloudTtsFails = 0;
 
   function pickSynthVoice() {
     if (!('speechSynthesis' in window)) return;
@@ -218,8 +221,8 @@ const TTS = (() => {
     text = String(text).trim();
     if (!text) return;
 
-    // Si Gemini está temporalmente caído, fallback directo
-    if (!geminiOk) return speakSynthFallback(text);
+    // Si el TTS por la nube está temporalmente caído, fallback directo a voz nativa
+    if (!cloudTtsOk) return speakSynthFallback(text);
 
     // Trocear sólo si el texto es muy largo (>500 chars), por bloques de párrafo
     // Esto reduce drásticamente el rate-limit (10 RPM en Gemini free).
@@ -237,7 +240,7 @@ const TTS = (() => {
             pushLog('sys', `🎙 TTS: ${data.provider} (${data.model || ''}) ${data.fallbackChain && data.fallbackChain.length > 1 ? '· con fallback' : ''}`);
           }
         } catch (e) {
-          geminiFails++;
+          cloudTtsFails++;
           // Si es rate limit (429), esperamos y reintentamos UNA vez
           if (/429/.test(String(e.message)) && i === 0) {
             await new Promise(r => setTimeout(r, 1500));
@@ -245,10 +248,10 @@ const TTS = (() => {
             catch (e2) { /* fallback */ }
           }
           if (!data) {
-            if (geminiFails >= 2) {
-              geminiOk = false;
+            if (cloudTtsFails >= 2) {
+              cloudTtsOk = false;
               pushLog('warn', 'TTS en pausa (NVIDIA+Gemini fallaron), usando voz nativa');
-              setTimeout(() => { geminiOk = true; geminiFails = 0; pushLog('sys', 'TTS reactivado'); }, 60000);
+              setTimeout(() => { cloudTtsOk = true; cloudTtsFails = 0; pushLog('sys', 'TTS reactivado'); }, 60000);
             }
             speakSynthFallback(chunks.slice(i).join(' '));
             return;
@@ -258,13 +261,13 @@ const TTS = (() => {
         if (!buf) { speakSynthFallback(chunks.slice(i).join(' ')); return; }
         playBuffer(buf);
         // Reset del contador de fallos al primer éxito
-        if (i === 0) geminiFails = 0;
+        if (i === 0) cloudTtsFails = 0;
       }
     } catch (e) {
-      geminiFails++;
-      if (geminiFails >= 2) {
-        geminiOk = false;
-        setTimeout(() => { geminiOk = true; geminiFails = 0; }, 60000);
+      cloudTtsFails++;
+      if (cloudTtsFails >= 2) {
+        cloudTtsOk = false;
+        setTimeout(() => { cloudTtsOk = true; cloudTtsFails = 0; }, 60000);
       }
       speakSynthFallback(text);
     }
@@ -291,9 +294,9 @@ const TTS = (() => {
   function isEnabled() { return enabled; }
   function setVoice(v) { voice = v || 'Charon'; }
   function getVoice() { return voice; }
-  function resetGemini() { geminiOk = true; geminiFails = 0; }
+  function resetCloudTts() { cloudTtsOk = true; cloudTtsFails = 0; }
 
-  return { speak, stop, toggle, isEnabled, setVoice, getVoice, resetGemini, getAmplitude };
+  return { speak, stop, toggle, isEnabled, setVoice, getVoice, resetCloudTts, getAmplitude };
 })();
 
 /* ============================================================
