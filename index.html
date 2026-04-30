@@ -146,9 +146,14 @@
           </div>
           <div class="chat-history" id="chat-history" data-testid="chat-history"></div>
           <div class="chat-input-row">
+            <button class="wakeword-btn" id="wakeword-btn" data-testid="wakeword-btn" aria-label="Activar escucha continua (wake word)" title="Escucha continua: decí 'Jarvis' para activar">&#128266;</button>
             <button class="mic-btn" id="mic-btn" data-testid="mic-btn" aria-label="Micrófono">&#127908;</button>
             <input type="text" id="chat-input" data-testid="chat-input" placeholder="Ingresá tu comando..." autocomplete="off" />
             <button class="send-btn" id="send-btn" data-testid="send-btn">ENVIAR</button>
+          </div>
+          <div class="wakeword-status" id="wakeword-status" style="display:none;">
+            <span class="wakeword-pulse"></span>
+            <span class="wakeword-label" id="wakeword-label">ESCUCHANDO... decí "Jarvis"</span>
           </div>
         </div>
       </section>
@@ -214,6 +219,9 @@
     </footer>
   </div>
 
+  <!-- Silero VAD: detección de voz en tiempo real (wake word) -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
   <script defer src="system-profile.js"></script>
   <script defer src="tabs-bridge.js"></script>
   <script defer src="script.js"></script>

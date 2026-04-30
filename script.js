@@ -377,6 +377,278 @@ function blobToBase64(blob) {
 }
 
 /* ============================================================
+   3.e WAKE WORD — Silero VAD + Groq Whisper
+   Escucha continua: detecta habla con VAD local (Silero),
+   transcribe cada segmento con Groq Whisper, y si empieza con
+   "jarvis" lo envía al Agent. Si no, lo descarta.
+   ============================================================ */
+const WakeWord = (() => {
+  let vadInstance = null;
+  let active = false;
+  let processing = false;       // evitar concurrencia
+  let pendingAudio = null;      // Float32Array del último segmento
+  const WAKE_WORDS = ['jarvis', 'jarvi', 'yarvis', 'jarbis', 'jarbes', 'charvis'];
+  const SAMPLE_RATE = 16000;    // Silero VAD output
+
+  /** Convierte Float32Array (PCM 16kHz) a WAV Blob */
+  function float32ToWavBlob(float32, sampleRate) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = float32.length * (bitsPerSample / 8);
+    const headerSize = 44;
+    const buffer = new ArrayBuffer(headerSize + dataSize);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    // fmt sub-chunk
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);           // subchunk size
+    view.setUint16(20, 1, true);            // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    // data sub-chunk
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // PCM samples
+    let offset = 44;
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      offset += 2;
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+
+  /** Busca "jarvis" al inicio de la transcripción */
+  function extractCommand(text) {
+    if (!text) return null;
+    const lower = text.toLowerCase().trim();
+    for (const ww of WAKE_WORDS) {
+      const idx = lower.indexOf(ww);
+      if (idx !== -1 && idx < 15) { // debe aparecer cerca del inicio
+        // El comando es todo lo que viene después del wake word
+        let cmd = text.slice(idx + ww.length).trim();
+        // Limpiar puntuación inicial
+        cmd = cmd.replace(/^[,.:;!?¿¡\s]+/, '').trim();
+        return cmd || null;
+      }
+    }
+    return null;
+  }
+
+  /** Procesa un segmento de audio detectado por VAD */
+  async function processSegment(audio) {
+    if (processing || !active) return;
+
+    // Ignorar segmentos muy cortos (< 0.3s = ruido)
+    if (audio.length < SAMPLE_RATE * 0.3) return;
+
+    // Ignorar segmentos muy largos (> 15s = probable ruido continuo)
+    if (audio.length > SAMPLE_RATE * 15) return;
+
+    processing = true;
+    const durSec = (audio.length / SAMPLE_RATE).toFixed(1);
+
+    // UI: indicar que está procesando
+    updateStatus('recording', `PROCESANDO ${durSec}s DE AUDIO...`);
+
+    try {
+      const wavBlob = float32ToWavBlob(audio, SAMPLE_RATE);
+      const base64 = await blobToBase64(wavBlob);
+
+      const r = await fetch('/api/transcribe-groq', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioBase64: base64,
+          mimeType: 'audio/wav',
+          language: 'es',
+        }),
+      });
+
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        pushLog('warn', `WakeWord: transcripción falló (${r.status})`);
+        processing = false;
+        resetStatus();
+        return;
+      }
+
+      const data = await r.json();
+      const text = (data.text || '').trim();
+
+      if (!text || text === '-' || text.length < 2) {
+        // Silencio o ruido
+        processing = false;
+        resetStatus();
+        return;
+      }
+
+      // Buscar "jarvis" en la transcripción
+      const cmd = extractCommand(text);
+
+      if (cmd) {
+        // ¡Wake word detectado!
+        pushLog('sys', `🎯 Wake word detectado! Comando: "${cmd.slice(0, 60)}"`);
+        beep(1320, 0.12, 'sine', 0.06);
+        beep(1760, 0.08, 'sine', 0.04);
+
+        // Flash visual
+        const btn = $('#wakeword-btn');
+        if (btn) {
+          btn.classList.add('triggered');
+          setTimeout(() => btn.classList.remove('triggered'), 500);
+        }
+
+        updateStatus('recording', `COMANDO: "${cmd.slice(0, 40)}..."`);
+
+        // Enviar al agent
+        setTimeout(() => {
+          sendMessage(cmd);
+          resetStatus();
+        }, 300);
+      } else if (text.length > 3) {
+        // Habla detectada pero sin wake word — log discreto
+        pushLog('info', `👂 Voz detectada (sin "Jarvis"): "${text.slice(0, 40)}..."`);
+        resetStatus();
+      } else {
+        resetStatus();
+      }
+    } catch (e) {
+      pushLog('warn', 'WakeWord: error al procesar audio — ' + (e.message || e));
+      resetStatus();
+    }
+
+    processing = false;
+  }
+
+  function updateStatus(mode, text) {
+    const statusEl = $('#wakeword-status');
+    const labelEl = $('#wakeword-label');
+    if (!statusEl || !labelEl) return;
+    statusEl.style.display = 'flex';
+    if (mode === 'recording') {
+      statusEl.classList.add('recording');
+    } else {
+      statusEl.classList.remove('recording');
+    }
+    labelEl.textContent = text;
+  }
+
+  function resetStatus() {
+    if (!active) {
+      const statusEl = $('#wakeword-status');
+      if (statusEl) statusEl.style.display = 'none';
+      return;
+    }
+    updateStatus('listening', 'ESCUCHANDO... decí "Jarvis"');
+  }
+
+  async function start() {
+    if (active) return true;
+
+    // Verificar que la librería VAD está cargada
+    if (typeof vad === 'undefined' || !vad.MicVAD) {
+      pushLog('error', 'WakeWord: librería VAD no cargada');
+      return false;
+    }
+
+    try {
+      pushLog('sys', '🔊 Iniciando escucha continua (Wake Word)...');
+
+      vadInstance = await vad.MicVAD.new({
+        positiveSpeechThreshold: 0.85,   // confianza alta para evitar falsos positivos
+        negativeSpeechThreshold: 0.65,
+        redemptionFrames: 8,             // ~240ms extra antes de cortar
+        preSpeechPadFrames: 5,           // capturar 150ms antes del inicio
+        minSpeechFrames: 5,              // mínimo ~150ms de habla
+        onSpeechStart: () => {
+          if (!active) return;
+          updateStatus('recording', 'HABLA DETECTADA...');
+        },
+        onSpeechEnd: (audio) => {
+          if (!active) return;
+          processSegment(audio);
+        },
+      });
+
+      await vadInstance.start();
+      active = true;
+
+      // UI
+      const btn = $('#wakeword-btn');
+      if (btn) {
+        btn.classList.add('active');
+        btn.title = 'Escucha continua: ACTIVA — click para desactivar';
+      }
+      updateStatus('listening', 'ESCUCHANDO... decí "Jarvis"');
+
+      pushLog('sys', '✓ Escucha continua activa — decí "Jarvis" para comandar');
+      beep(880, 0.06, 'sine', 0.04);
+      beep(1320, 0.06, 'sine', 0.04);
+
+      return true;
+    } catch (e) {
+      pushLog('error', 'WakeWord: no se pudo iniciar — ' + (e.message || e));
+      console.error('[WakeWord] init error:', e);
+      return false;
+    }
+  }
+
+  async function stop() {
+    if (!active) return;
+    active = false;
+    processing = false;
+
+    try {
+      if (vadInstance) {
+        vadInstance.pause();
+        vadInstance.destroy();
+        vadInstance = null;
+      }
+    } catch (e) {
+      console.warn('[WakeWord] stop error:', e);
+    }
+
+    // UI
+    const btn = $('#wakeword-btn');
+    if (btn) {
+      btn.classList.remove('active', 'triggered');
+      btn.title = 'Escucha continua: decí "Jarvis" para activar';
+    }
+    const statusEl = $('#wakeword-status');
+    if (statusEl) statusEl.style.display = 'none';
+
+    pushLog('sys', '🔇 Escucha continua desactivada');
+    beep(440, 0.06, 'sawtooth', 0.03);
+  }
+
+  function toggle() {
+    if (active) return stop();
+    return start();
+  }
+
+  function isActive() { return active; }
+
+  return { start, stop, toggle, isActive };
+})();
+
+/* ============================================================
    3.d DEVICE METRICS — datos reales del dispositivo
    ============================================================ */
 const Device = (() => {
@@ -2259,14 +2531,19 @@ function bindEvents() {
   $('#chat-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('#send-btn').click(); }
   });
-  // Mic — STT real via MediaRecorder + Gemini transcription
+   // Mic — STT real via MediaRecorder + Gemini transcription
   $('#mic-btn').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
+    // Si el wake word está activo, pausarlo mientras se graba manualmente
+    const wasWakeWordActive = WakeWord.isActive();
+    if (wasWakeWordActive) await WakeWord.stop();
+
     if (!STT.isActive()) {
       // arrancar grabación
       const ok = await STT.start();
       if (!ok) {
         beep(220, 0.15, 'sawtooth', 0.04);
+        if (wasWakeWordActive) WakeWord.start();
         return;
       }
       STATE.micActive = true;
@@ -2277,6 +2554,7 @@ function bindEvents() {
       beep(1100, 0.06, 'sine', 0.04);
       // safety: corte automático a los 20s
       STATE._micTimer = setTimeout(() => { if (STT.isActive()) $('#mic-btn').click(); }, 20000);
+      STATE._micWasWakeWord = wasWakeWordActive;
     } else {
       // detener grabación + transcribir
       clearTimeout(STATE._micTimer);
@@ -2296,7 +2574,17 @@ function bindEvents() {
         Sphere.setMode('idle');
         pushLog('warn', 'No se detectó voz inteligible');
       }
+      // Reactivar wake word si estaba activo antes
+      if (STATE._micWasWakeWord) {
+        setTimeout(() => WakeWord.start(), 500);
+        STATE._micWasWakeWord = false;
+      }
     }
+  });
+  // Wake Word — escucha continua con Silero VAD + Groq Whisper
+  $('#wakeword-btn')?.addEventListener('click', async () => {
+    await WakeWord.toggle();
+    ensureAudio(); // Asegurar que AudioContext esté activo
   });
   // Clear logs
   $('#clear-logs').addEventListener('click', () => {
