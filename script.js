@@ -1981,7 +1981,8 @@ async function consumeJsonResponse(r, thinkingMsg, thinkingLog, t0) {
     return null;
   }
   const lvlBadge = data.reasoningLevel ? ` · razonamiento ${data.reasoningLevel.toUpperCase()}` : '';
-  pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms${lvlBadge}`);
+  const taskBadge = data.taskType === 'heavy' ? ' · 🧑‍💻 CODING' : '';
+  pushLog('sys', `✓ Respuesta de ${data.provider || '?'} en ${elapsedMs}ms${taskBadge}${lvlBadge}`);
   if (data.fallbackChain && data.fallbackChain.length > 1) {
     for (const step of data.fallbackChain) {
       if (step.status === 'error') pushLog('warn', `⚠ ${step.provider} falló — escalando…`);
@@ -2000,6 +2001,7 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   let provider = '?';
   let model = '';
   let reasoningLevel = null;
+  let taskType = 'general';
   const thinkLogM = thinkingLog ? thinkingLog.querySelector('.m') : null;
 
   // Sólo actualizamos el LOG con un snippet del razonamiento (no el chat).
@@ -2032,9 +2034,11 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
           provider = payload.provider || provider;
           model = payload.model || model;
           reasoningLevel = payload.reasoningLevel || null;
+          taskType = payload.taskType || 'general';
           if (thinkLogM) {
             const lbl = reasoningLevel ? ` (${reasoningLevel.toUpperCase()})` : '';
-            thinkLogM.textContent = `Pensando con ${provider}${lbl}…`;
+            const taskLbl = taskType === 'heavy' ? ' 🧑‍💻' : '';
+            thinkLogM.textContent = `Pensando con ${provider}${lbl}${taskLbl}…`;
           }
         } else if (evtName === 'reasoning') {
           aggregateReasoning += payload.d || '';
@@ -2057,7 +2061,8 @@ async function consumeReasoningStream(r, thinkingMsg, thinkingLog, t0) {
   removeThinkingMessage(thinkingMsg);
   finishThinkingLog(thinkingLog, 'ok', elapsedMs);
 
-  pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${reasoningLevel ? ' · razonamiento '+reasoningLevel.toUpperCase() : ''}${aggregateReasoning ? ' ('+aggregateReasoning.length+' chars)' : ''}`);
+  const taskBadge = taskType === 'heavy' ? ' · 🧑‍💻 CODING' : '';
+  pushLog('sys', `✓ Respuesta de ${provider} en ${elapsedMs}ms${taskBadge}${reasoningLevel ? ' · razonamiento '+reasoningLevel.toUpperCase() : ''}${aggregateReasoning ? ' ('+aggregateReasoning.length+' chars)' : ''}`);
 
   // Limpiamos cualquier <think>...</think> que se haya filtrado al content
   // (defensivo: NVIDIA usa reasoning_content separado, pero algunos modelos

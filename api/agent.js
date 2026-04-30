@@ -1,19 +1,19 @@
 /**
  * /api/agent — Vercel Serverless Function
  * ───────────────────────────────────────────────────────────────
- * Cadena de fallback multi-proveedor: si uno falla (429, 5xx, red),
- * salta automáticamente al siguiente.
+ * ROUTING INTELIGENTE: clasifica la tarea como "heavy" (coding,
+ * matemáticas avanzadas) o "general" (conversación, comandos).
  *
- * Orden de proveedores:
- *   1. NVIDIA      (nvidia/nemotron-3-super-120b-a12b) ← reasoning, gratis
- *   2. Gemini #1   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD
- *   3. Gemini #2   (gemini-2.0-flash)  ← 15 RPM · 1500 RPD (key separada)
- *   4. Mistral     (mistral-large-latest) ← 2 RPM · 1B tokens/mes
- *   5. OpenRouter  (llama-3.3-70b-instruct:free) ← 20 RPM · 200 RPD
- *   6. Hugging Face (Llama-3.3-70B vía router) ← créditos pequeños
+ * Cadena HEAVY (coding/análisis pesado):
+ *   1. NVIDIA Qwen3 Coder 480B  ← modelo especializado en código
+ *   2→4. Fallback a Gemini / Mistral
+ *
+ * Cadena GENERAL (conversación):
+ *   1. NVIDIA Nemotron 120B ← reasoning adaptativo
+ *   2→6. Gemini → Mistral → OpenRouter → HuggingFace
  *
  * Body esperado:  { messages, systemPrompt? }
- * Respuesta:      { reply, provider, model, fallbackChain? }
+ * Respuesta:      { reply, provider, model, taskType, fallbackChain? }
  */
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
@@ -74,6 +74,37 @@ const PROVIDERS = [
   },
 ];
 
+/* Cadena HEAVY — tareas de coding / análisis pesado */
+const PROVIDERS_HEAVY = [
+  {
+    name: 'nvidia-coder',
+    kind: 'openai',
+    model: 'qwen/qwen3-coder-480b-a35b-instruct',
+    keyEnv: 'NVIDIA_API_KEY',
+    endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    gen: { temperature: 0.7, top_p: 0.8, max_tokens: 4096 },
+  },
+  {
+    name: 'gemini-1',
+    kind: 'gemini',
+    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    keyEnv: 'GEMINI_API_KEY',
+  },
+  {
+    name: 'gemini-2',
+    kind: 'gemini',
+    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    keyEnv: 'GEMINI_API_KEY_2',
+  },
+  {
+    name: 'mistral',
+    kind: 'openai',
+    model: 'mistral-large-latest',
+    keyEnv: 'MISTRAL_API_KEY',
+    endpoint: 'https://api.mistral.ai/v1/chat/completions',
+  },
+];
+
 const COMMON_GEN = { temperature: 0.75, max_tokens: 600, top_p: 0.95 };
 
 /* ============================================================
@@ -120,6 +151,36 @@ function detectReasoningLevel(messages) {
   return { level: 'medium', enable_thinking: true, reasoning_budget: 1500 };
 }
 
+/* ============================================================
+   CLASIFICADOR DE TAREA — routing inteligente
+   ────────────────────────────────────────────────────────────
+   Decide si el mensaje es "heavy" (coding, matemáticas avanzadas)
+   o "general" (conversación, comandos del HUD, etc.).
+   ============================================================ */
+function detectTaskType(messages) {
+  const last = [...messages].reverse().find(m => {
+    const r = m && m.role;
+    return !r || r === 'user';
+  });
+  const text = (last && last.text || '').trim();
+  const lower = text.toLowerCase();
+
+  // Marcadores de coding / tareas pesadas
+  const codingRe = /\b(c[oó]digo|programa[rmá]|script|funci[oó]n(es)?|algoritmo|regex|regexp|sql|api|endpoint|refactor|deploy|compil|debug|depura|stack\s?trace|excepci[oó]n|variable|clase|m[eé]todo|bucle|loop|array|string|json|html|css|javascript|python|java\b|typescript|react|node\.?js|express|next\.?js|vite|import\s|export\s|fetch\(|async\s|await\s|promise|callback|error\s+(de\s+)?c[oó]digo|bug|fixe?a|arregl[aá]|implement[aá]|cre[aá]\s+(una?\s+)?(app|aplicaci[oó]n|programa|sistema|bot|servidor|server|backend|frontend|componente)|arquitectura\s+(de\s+)?(software|sistema)|base\s+de\s+datos|database|query|consulta\s+sql|optimiz[aá]\s+(el\s+)?c[oó]digo|escrib[ií]\s+(un\s+)?(c[oó]digo|script|programa|funci[oó]n)|analiz[aá]\s+(este\s+)?(c[oó]digo|error|bug)|explic[aá]me?\s+(este\s+|el\s+)?(c[oó]digo|algoritmo)|docker|kubernetes|git\b|npm|pip|cargo|webpack|eslint|testing|unit\s*test|test\s+unitario)\b/i;
+
+  // Presencia de bloques de código o muchos símbolos de código
+  const hasCodeBlock = /```[\s\S]*```|`[^`]+`/.test(text);
+  const codeSymbols = (text.match(/[{}()\[\];=>]/g) || []).length;
+
+  // Matemáticas avanzadas
+  const mathHeavy = /\b(integral|derivada|ecuaci[oó]n\s+diferencial|[aá]lgebra\s+lineal|matriz|determinante|eigenvector|fourier|laplace|taylor|probabilidad\s+condicion|regresi[oó]n|optimizaci[oó]n\s+matem|demostrar\s+(el\s+)?teorema|teorema\s+de)\b/i;
+
+  if (codingRe.test(lower) || hasCodeBlock || codeSymbols >= 5 || mathHeavy.test(lower)) {
+    return 'heavy';
+  }
+  return 'general';
+}
+
 /** Aplica la heurística a las opciones del proveedor (clona body) */
 function applyAdaptiveReasoning(p, messages, body) {
   if (!p.adaptiveReasoning) return body;
@@ -151,30 +212,35 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'messages vacío o inválido' });
   }
   const skipSet = new Set((Array.isArray(skipProviders) ? skipProviders : []).map(s => String(s).toLowerCase()));
-  // Calculamos el nivel de razonamiento UNA sola vez (depende sólo del último
-  // mensaje del usuario, no del proveedor). Lo devolvemos al cliente para que
-  // pueda mostrarlo en el log y, en el modo streaming, lo emitimos en el
-  // evento `meta`.
+
+  // ── Routing inteligente: detectar tipo de tarea ──
+  const taskType = detectTaskType(messages);
+  const activeProviders = taskType === 'heavy' ? PROVIDERS_HEAVY : PROVIDERS;
+
+  // Calculamos el nivel de razonamiento UNA sola vez (sólo aplica a Nemotron)
   const nvidiaLevel = detectReasoningLevel(messages);
 
   /* ============================================================
-     Modo STREAMING (sólo NVIDIA por ahora) — proxy SSE al cliente
+     Modo STREAMING — proxy SSE al cliente
+     Para heavy → nvidia-coder, para general → nvidia (Nemotron)
      Si falla, automáticamente caemos a modo no-streaming.
      ============================================================ */
-  if (wantStream && !skipSet.has('nvidia')) {
-    const nvidia = PROVIDERS.find(p => p.name === 'nvidia');
-    const nvKey = nvidia && process.env[nvidia.keyEnv];
-    if (nvidia && nvKey) {
-      const ok = await streamProxyOpenAI(nvidia, nvKey, messages, systemPrompt, res);
-      if (ok) return; // ya enviamos toda la respuesta como SSE
-      // si streamProxy ya escribió headers, no podemos volver atrás
-      // (controlado dentro: solo retorna false si NO se enviaron headers)
+  if (wantStream) {
+    const streamProvider = taskType === 'heavy'
+      ? activeProviders.find(p => p.name === 'nvidia-coder')
+      : activeProviders.find(p => p.name === 'nvidia');
+    const skipName = streamProvider?.name;
+    if (streamProvider && !skipSet.has(skipName)) {
+      const sKey = process.env[streamProvider.keyEnv];
+      if (sKey) {
+        const ok = await streamProxyOpenAI(streamProvider, sKey, messages, systemPrompt, res, taskType);
+        if (ok) return;
+      }
     }
-    // si no había NVIDIA o no hubo respuesta válida, seguimos en modo no-stream
   }
 
   const fallbackChain = [];
-  for (const p of PROVIDERS) {
+  for (const p of activeProviders) {
     if (skipSet.has(p.name)) {
       fallbackChain.push({ provider: p.name, status: 'skipped' });
       continue;
@@ -193,6 +259,7 @@ export default async function handler(req, res) {
           reply: reply.trim(),
           provider: p.name,
           model: p.model,
+          taskType,
           fallbackChain,
           reasoningLevel: p.adaptiveReasoning ? nvidiaLevel.level : null,
         });
@@ -205,6 +272,7 @@ export default async function handler(req, res) {
   }
   return res.status(503).json({
     error: 'Todos los proveedores fallaron o no tienen key configurada',
+    taskType,
     fallbackChain,
   });
 }
@@ -214,7 +282,7 @@ export default async function handler(req, res) {
    ─ Devuelve true si ya escribió la respuesta completa al cliente.
    ─ Devuelve false si NO escribió headers (todavía podemos hacer fallback).
    ============================================================ */
-async function streamProxyOpenAI(p, key, messages, systemPrompt, res) {
+async function streamProxyOpenAI(p, key, messages, systemPrompt, res, taskType) {
   const oaiMessages = [];
   if (systemPrompt) oaiMessages.push({ role: 'system', content: systemPrompt });
   for (const m of messages) {
@@ -272,7 +340,7 @@ async function streamProxyOpenAI(p, key, messages, systemPrompt, res) {
   res.flushHeaders?.();
 
   // Evento inicial con metadata de provider
-  res.write(`event: meta\ndata: ${JSON.stringify({ provider: p.name, model: p.model, reasoningLevel })}\n\n`);
+  res.write(`event: meta\ndata: ${JSON.stringify({ provider: p.name, model: p.model, reasoningLevel, taskType: taskType || 'general' })}\n\n`);
 
   // Reenvío del stream upstream → cliente, parseando los chunks SSE
   const reader = upstream.body.getReader();
