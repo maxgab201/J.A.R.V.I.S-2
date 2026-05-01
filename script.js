@@ -457,33 +457,58 @@ const WakeWord = (() => {
     const SRClass = window.webkitSpeechRecognition || window.SpeechRecognition;
     srInstance = new SRClass();
     srInstance.continuous = true;
-    srInstance.interimResults = false;
-    srInstance.lang = 'es-MX';
+    srInstance.interimResults = true;
+    srInstance.lang = 'es';
     srInstance.maxAlternatives = 1;
 
     srInstance.onresult = (e) => {
       if (!active) return;
-      const result = e.results[e.results.length - 1];
-      if (!result.isFinal) return;
-      const text = result[0].transcript;
+      const lastResult = e.results[e.results.length - 1];
+      const text = lastResult[0].transcript;
+      const isFinal = lastResult.isFinal;
 
+      // Detectar wake word en interim Y final (para reaccionar rápido)
+      const lower = text.toLowerCase().trim();
+      const wakeWordFound = WAKE_WORDS.some(ww => {
+        const idx = lower.indexOf(ww);
+        return idx !== -1 && idx < 20;
+      });
+
+      if (!wakeWordFound) return;
+
+      // Feedback visual inmediato en cuanto se detecta el wake word
+      const btn = $('#wakeword-btn');
+      if (btn) {
+        btn.classList.add('triggered');
+        setTimeout(() => btn.classList.remove('triggered'), 600);
+      }
+
+      if (!isFinal) {
+        // Interim: solo feedback — no enviar todavía
+        beep(880, 0.08, 'sine', 0.04);
+        updateStatus('listening', 'JARVIS ACTIVADO...');
+        return;
+      }
+
+      // Resultado final: intentar extraer comando
       const cmd = extractCommand(text);
       if (cmd) {
-        pushLog('sys', `🎯 Wake word detectado! Comando: "${cmd.slice(0, 60)}"`);
+        // Wake word + comando en la misma frase
+        pushLog('sys', `🎯 Comando: "${cmd.slice(0, 60)}"`);
         beep(1320, 0.12, 'sine', 0.06);
         beep(1760, 0.08, 'sine', 0.04);
-
-        const btn = $('#wakeword-btn');
-        if (btn) {
-          btn.classList.add('triggered');
-          setTimeout(() => btn.classList.remove('triggered'), 500);
-        }
-
         updateStatus('recording', `COMANDO: "${cmd.slice(0, 40)}..."`);
         setTimeout(() => {
           sendMessage(cmd);
           resetStatus();
         }, 300);
+      } else {
+        // Solo "JARVIS" sin comando — dar feedback y esperar siguiente frase
+        pushLog('sys', `👂 "Jarvis" detectado — decí tu comando`);
+        beep(1320, 0.10, 'sine', 0.05);
+        beep(880, 0.10, 'sine', 0.05);
+        updateStatus('listening', 'JARVIS ACTIVADO — decí tu comando...');
+        setTimeout(() => resetStatus(), 4000);
       }
     };
 
