@@ -384,6 +384,7 @@ function blobToBase64(blob) {
    ============================================================ */
 const WakeWord = (() => {
   let vadInstance = null;
+  let srInstance = null;        // Web Speech Recognition (Chrome/Edge path)
   let active = false;
   let processing = false;       // evitar concurrencia
   let pendingAudio = null;      // Float32Array del último segmento
@@ -451,6 +452,79 @@ const WakeWord = (() => {
     return null;
   }
 
+  /** Wake word via Web Speech API — Chrome/Edge (gratis, nativo, real-time) */
+  function startWebSpeechWakeWord() {
+    const SRClass = window.webkitSpeechRecognition || window.SpeechRecognition;
+    srInstance = new SRClass();
+    srInstance.continuous = true;
+    srInstance.interimResults = false;
+    srInstance.lang = 'es-MX';
+    srInstance.maxAlternatives = 1;
+
+    srInstance.onresult = (e) => {
+      if (!active) return;
+      const result = e.results[e.results.length - 1];
+      if (!result.isFinal) return;
+      const text = result[0].transcript;
+
+      const cmd = extractCommand(text);
+      if (cmd) {
+        pushLog('sys', `🎯 Wake word detectado! Comando: "${cmd.slice(0, 60)}"`);
+        beep(1320, 0.12, 'sine', 0.06);
+        beep(1760, 0.08, 'sine', 0.04);
+
+        const btn = $('#wakeword-btn');
+        if (btn) {
+          btn.classList.add('triggered');
+          setTimeout(() => btn.classList.remove('triggered'), 500);
+        }
+
+        updateStatus('recording', `COMANDO: "${cmd.slice(0, 40)}..."`);
+        setTimeout(() => {
+          sendMessage(cmd);
+          resetStatus();
+        }, 300);
+      }
+    };
+
+    srInstance.onerror = (e) => {
+      if (e.error === 'not-allowed') {
+        pushLog('error', 'WakeWord: acceso al micrófono denegado');
+        active = false;
+        const btn = $('#wakeword-btn');
+        if (btn) btn.classList.remove('active', 'triggered');
+        return;
+      }
+      // Reintentar en errores transitorios (network, no-speech, aborted)
+      if (active) setTimeout(() => { try { srInstance && srInstance.start(); } catch {} }, 1000);
+    };
+
+    srInstance.onend = () => {
+      // continuous=true no debería terminar salvo error/pausa — reiniciar
+      if (active) setTimeout(() => { try { srInstance && srInstance.start(); } catch {} }, 500);
+    };
+
+    try {
+      srInstance.start();
+      active = true;
+
+      const btn = $('#wakeword-btn');
+      if (btn) {
+        btn.classList.add('active');
+        btn.title = 'Escucha continua: ACTIVA — click para desactivar';
+      }
+      updateStatus('listening', 'ESCUCHANDO... decí "Jarvis"');
+      pushLog('sys', '✓ Escucha continua activa (Web Speech API) — decí "Jarvis" para comandar');
+      beep(880, 0.06, 'sine', 0.04);
+      beep(1320, 0.06, 'sine', 0.04);
+      return true;
+    } catch (e) {
+      pushLog('error', 'WakeWord: no se pudo iniciar SR — ' + (e.message || e));
+      srInstance = null;
+      return false;
+    }
+  }
+
   /** Procesa un segmento de audio detectado por VAD */
   async function processSegment(audio) {
     if (processing || !active) return;
@@ -471,13 +545,12 @@ const WakeWord = (() => {
       const wavBlob = float32ToWavBlob(audio, SAMPLE_RATE);
       const base64 = await blobToBase64(wavBlob);
 
-      const r = await fetch('/api/transcribe-groq', {
+      const r = await fetch('/api/transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           audioBase64: base64,
           mimeType: 'audio/wav',
-          language: 'es',
         }),
       });
 
@@ -562,14 +635,20 @@ const WakeWord = (() => {
   async function start() {
     if (active) return true;
 
-    // Verificar que la librería VAD está cargada
+    // Primario: Web Speech API (Chrome/Edge — gratis, nativo, sin APIs externas)
+    const SRClass = window.webkitSpeechRecognition || window.SpeechRecognition;
+    if (SRClass) {
+      return startWebSpeechWakeWord();
+    }
+
+    // Fallback: Silero VAD + Gemini (Brave/Firefox — no soportan SpeechRecognition)
     if (typeof vad === 'undefined' || !vad.MicVAD) {
-      pushLog('error', 'WakeWord: librería VAD no cargada');
+      pushLog('error', 'WakeWord: Web Speech API no disponible y librería VAD no cargada');
       return false;
     }
 
     try {
-      pushLog('sys', '🔊 Iniciando escucha continua (Wake Word)...');
+      pushLog('sys', '🔊 Iniciando escucha continua (VAD + Gemini)...');
 
       vadInstance = await vad.MicVAD.new({
         positiveSpeechThreshold: 0.85,   // confianza alta para evitar falsos positivos
@@ -598,7 +677,7 @@ const WakeWord = (() => {
       }
       updateStatus('listening', 'ESCUCHANDO... decí "Jarvis"');
 
-      pushLog('sys', '✓ Escucha continua activa — decí "Jarvis" para comandar');
+      pushLog('sys', '✓ Escucha continua activa (VAD + Gemini) — decí "Jarvis" para comandar');
       beep(880, 0.06, 'sine', 0.04);
       beep(1320, 0.06, 'sine', 0.04);
 
@@ -615,6 +694,13 @@ const WakeWord = (() => {
     active = false;
     processing = false;
 
+    // Detener Web Speech Recognition si estaba activo
+    if (srInstance) {
+      try { srInstance.onend = null; srInstance.onerror = null; srInstance.stop(); } catch {}
+      srInstance = null;
+    }
+
+    // Detener VAD si estaba activo
     try {
       if (vadInstance) {
         vadInstance.pause();
@@ -860,6 +946,11 @@ function runBootSequence() {
     setTimeout(() => {
       addJarvisMessage('Bienvenido de vuelta. Todos los sistemas operando dentro de parámetros normales. ¿En qué puedo asistirte hoy?');
     }, 700);
+
+    // Auto-iniciar escucha continua sin intervención del usuario
+    setTimeout(() => {
+      if (!WakeWord.isActive()) WakeWord.start();
+    }, 1200);
   }
 }
 
@@ -2581,7 +2672,7 @@ function bindEvents() {
       }
     }
   });
-  // Wake Word — escucha continua con Silero VAD + Groq Whisper
+  // Wake Word — escucha continua con Web Speech API (o VAD + Gemini en Brave/Firefox)
   $('#wakeword-btn')?.addEventListener('click', async () => {
     await WakeWord.toggle();
     ensureAudio(); // Asegurar que AudioContext esté activo

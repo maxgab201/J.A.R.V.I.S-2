@@ -137,6 +137,5 @@ for (const port of PORTS) {
     console.log(`[dev] J.A.R.V.I.S. corriendo en http://localhost:${port}`);
   });
 }
-console.log(`[dev] API: /api/agent  /api/transcribe  /api/transcribe-groq  /api/tts`);
+console.log(`[dev] API: /api/agent  /api/transcribe  /api/tts`);
 if (!process.env.GEMINI_API_KEY) console.warn('[dev] ⚠ GEMINI_API_KEY no encontrada en .env');
-if (!process.env.GROQ_API_KEY) console.warn('[dev] ⚠ GROQ_API_KEY no encontrada en .env (necesaria para Wake Word)');
